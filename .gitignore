@@ -1,0 +1,12 @@
+*.pyc
+*.log
+*.key
+*.cert
+*.crt
+*.pem
+.DS_Store
+
+.pytest_cache/
+
+/.env
+/venv
