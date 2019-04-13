@@ -16,8 +16,8 @@ def run_cmd(args):
         # Default dir: {basedir}/{context}
         # Filename: {container}.toml
 
-    # Enter user namespace
-        # Use newuidmap/newgidmap if available
+    # Parse target namespaces
+        # Check if newuidmap/newgidmap available
             # Parse /etc/subuid & /etc/subgid
             # Honor configured (alternate) mappings in config
         # NOTE: done before other operations in order to ensure
