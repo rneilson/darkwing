@@ -38,21 +38,33 @@ def make_context_config(name='default', rootless=None, uid=None, gid=None):
     do_chown = uid != euid or gid != egid
 
     # Create any parent dir(s)
-    if not cfg_base.exists():
-        cfg_base.mkdir(mode=0o775, parents=True, exist_ok=True)
-        if do_chown:
-            os.chown(cfg_base, uid, gid)
-    if not sto_base.exists():
-        sto_base.mkdir(mode=0o775, parents=True, exist_ok=True)
-        if do_chown:
-            os.chown(sto_base, uid, gid)
+    for dir_path in [cfg_base, sto_base]:
+        if not dir_path.exists():
+            dir_path.mkdir(mode=0o775, parents=True)
+            if do_chown:
+                os.chown(dir_path, uid, gid)
 
     # Touch mostly to raise FileExistsError
     ctx_path.touch(mode=0o664, exist_ok=False)
     if do_chown:
         os.chown(ctx_path, uid, gid)
 
+    # Write context to file
     context = default_context(name, rootless=rootless, uid=uid, gid=gid)
     ctx_path.write_text(toml.dumps(context))
+
+    # Ensure all context's subdirs exist
+    dirs = [
+        (Path(context['config']['base']), 0o775),
+        (Path(context['config']['secrets']), 0o770),
+        (Path(context['storage']['images']), 0o775),
+        (Path(context['storage']['containers']), 0o770),
+        (Path(context['storage']['volumes']), 0o770),
+    ]
+    for dir_path, dir_mode in dirs:
+        if not dir_path.exists():
+            dir_path.mkdir(mode=dir_mode, parents=True)
+            if do_chown:
+                os.chown(dir_path, uid, gid)
 
     return context, ctx_path
