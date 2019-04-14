@@ -4,34 +4,43 @@ from pathlib import Path
 
 from darkwing.utils import probably_root
 
-def default_base_paths(rootless=None):
+def get_runtime_dir(uid=None):
+    # TODO: XDG_RUNTIME_DIR handling?
+    if uid is None:
+        uid = os.geteuid()
+    if uid:
+        return Path('/run/user') / str(uid)
+    return Path('/run')
+
+def default_base_paths(rootless=None, uid=None):
     if rootless is None:
         rootless = not probably_root()
 
+    if uid is None:
+        uid = os.geteuid()
+
     if rootless:
-        configs = Path('~/.darkwing').expanduser()
-        storage = Path('~/.local/share/darkwing').expanduser()
-        runtime = Path(os.path.expandvars('$XDG_RUNTIME_DIR/darkwing'))
+        home = Path(pwd.getpwuid(uid).pw_dir)
+        configs = home / '.darkwing'
+        storage = home / '.local/share/darkwing'
     else:
         configs = Path('/etc/darkwing')
         storage = Path('/var/lib/darkwing')
-        runtime = Path('/run/darkwing')
+
+    runtime = get_runtime_dir(uid=uid) / 'darkwing'
 
     return configs, storage, runtime
 
-def default_context(name='default', rootless=None, username=None):
+def default_context(name='default', rootless=None, uid=None, gid=None):
     if rootless is None:
         rootless = not probably_root()
 
-    if username is None:
+    if uid is None:
         uid = os.geteuid()
+    if gid is None:
         gid = os.getegid()
-    else:
-        user = pwd.getpwnam(username)
-        uid = user.pw_uid
-        gid = user.pw_gid
 
-    base_cfg, base_sto, base_run = default_base_paths(rootless)
+    base_cfg, base_sto, base_run = default_base_paths(rootless, uid)
 
     return {
         'domain': f"{name}.darkwing.local",
@@ -40,61 +49,29 @@ def default_context(name='default', rootless=None, username=None):
         },
         'configs': {
             'base': str(base_cfg / name),
-            'secrets': str(base_cfg / name / 'secrets'),
+            'secrets': str(base_cfg / name / '.secrets'),
         },
         'storage': {
-            'containers': str(base_sto / 'containers'),
             'images': str(base_sto / 'images'),
-            'volumes': str(base_sto / 'volumes'),
+            'containers': str(base_sto / 'containers' / name),
+            'volumes': str(base_sto / 'volumes' / name),
         },
         'runtime': {
             'base': str(base_run / name),
         },
-        'rootless': rootless,
         'user': {
+            'rootless': rootless,
             'uid': uid,
             'gid': gid,
         },
     }
 
-def default_container(name, context, image=None, tag='latest', rootless=None):
+def default_container(name, context, image=None, tag='latest', uid=0, gid=0):
     if image is None:
         image = name
 
-    if rootless is None:
-        rootless = context['rootless']
-
-    if rootless:
-        user = {
-            'uid': 0,
-            'gid': 0,
-            'maps': {
-                'uid': [
-                    {
-                        'container': 0,
-                        'host': context['user']['uid'],
-                        'size': 1
-                    }
-                ],
-                'gid': [
-                    {
-                        'container': 0,
-                        'host': context['user']['gid'],
-                        'size': 1
-                    }
-                ],
-            },
-        }
-    else:
-        user = {
-            'uid': context['user']['uid'],
-            'gid': context['user']['gid'],
-            'maps': {},
-        }
-
-    runtime_dir = Path(context['runtime']['base']) / name
-    secrets_dir = runtime_dir / 'secrets'
-    volumes_dir = runtime_dir / 'volumes'
+    runtime_path = Path(context['runtime']['base']) / name
+    secrets_path = Path(context['configs']['secrets']) / name
 
     return {
         'hostname': f"{name}.{context['domain']}",
@@ -104,25 +81,33 @@ def default_container(name, context, image=None, tag='latest', rootless=None):
             'image': image,
             'tag': tag,
         },
-        'runtime': {
-            'base': str(runtime_dir),
-            'secrets': str(secrets_dir),
-            'volumes': str(volumes_dir),
-        },
         'env': {
             'vars': {},
             'files': [],
         },
+        'runtime': {
+            'base': str(runtime_path),
+            'secrets': str(runtime_path / 'secrets'),
+        },
+        'secrets': [
+            {
+                'source': str(secrets_path),
+                'target': str(runtime_path / 'secrets'),
+                'copy': True,
+            },
+        ],
         'volumes': [
             {
-                'source': str(secrets_dir),
+                'source': str(runtime_path / 'secrets'),
                 'target': '/run/secrets',
                 'type': 'bind',
                 'readonly': True,
             },
         ],
-        'rootless': rootless,
-        'user': user,
+        'user': {
+            'uid': uid,
+            'gid': gid,
+        },
         'caps': {
             'add': [],
             'drop': [],
