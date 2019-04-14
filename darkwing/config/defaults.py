@@ -1,4 +1,5 @@
 import os
+import pwd
 from pathlib import Path
 
 from darkwing.utils import probably_root
@@ -18,9 +19,17 @@ def default_base_paths(rootless=None):
 
     return configs, storage, runtime
 
-def default_context(name='default', rootless=None):
+def default_context(name='default', rootless=None, username=None):
     if rootless is None:
         rootless = not probably_root()
+
+    if username is None:
+        uid = os.geteuid()
+        gid = os.getegid()
+    else:
+        user = pwd.getpwnam(username)
+        uid = user.pw_uid
+        gid = user.pw_gid
 
     base_cfg, base_sto, base_run = default_base_paths(rootless)
 
@@ -43,8 +52,8 @@ def default_context(name='default', rootless=None):
         },
         'rootless': rootless,
         'user': {
-            'uid': os.geteuid(),
-            'gid': os.getegid(),
+            'uid': uid,
+            'gid': gid,
         },
     }
 
@@ -104,13 +113,14 @@ def default_container(name, context, image=None, tag='latest', rootless=None):
             'vars': {},
             'files': [],
         },
-        'volumes': {
-            '/run/secrets': {
-                'type': 'bind',
+        'volumes': [
+            {
                 'source': str(secrets_dir),
+                'target': '/run/secrets',
+                'type': 'bind',
                 'readonly': True,
             },
-        },
+        ],
         'rootless': rootless,
         'user': user,
         'caps': {
