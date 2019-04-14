@@ -1,5 +1,8 @@
 import os
+import pwd
+import grp
 from pathlib import Path
+from getpass import getuser
 
 def probably_root():
     '''
@@ -21,3 +24,16 @@ def probably_root():
     # If our user namespace is equivalent to PID 1's namespace,
     # then as far as filesystem access (etc) goes, we're root
     return user_ns == root_ns
+
+def user_ids(username=None, groupname=None):
+    if username is None:
+        username = getuser()
+
+    user = pwd.getpwnam(username)
+    uid = user.pw_uid
+    gid = user.pw_gid
+    # Allow specifying alternate group
+    if groupname is not None:
+        gid = grp.getgrnam(groupname).gr_gid
+
+    return uid, gid
