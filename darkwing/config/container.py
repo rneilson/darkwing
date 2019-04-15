@@ -19,9 +19,9 @@ def make_container_config(name, context, image=None,
     euid = os.geteuid()
     egid = os.getegid()
     
-    cfg_base = context['configs']['base']
-    sec_base = context['configs']['secrets']
-    con_path = (Path(cfg_base) / name).with_suffix('.toml')
+    cfg_base = Path(context['configs']['base'])
+    sec_base = Path(context['configs']['secrets'])
+    con_path = (cfg_base / name).with_suffix('.toml')
     cfg_user = context['user']
     do_chown = cfg_user['uid'] != euid or cfg_user['gid'] != egid
 

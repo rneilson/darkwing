@@ -21,7 +21,8 @@ def get_context_config(name='default', dirs=None, rootless=None, uid=None):
 
     return None, None
 
-def make_context_config(name='default', rootless=None, uid=None, gid=None):
+def make_context_config(name='default', rootless=None, uid=None,
+                        gid=None, configs_dir=None, storage_dir=None):
     if rootless is None:
         rootless = not probably_root()
 
@@ -33,7 +34,13 @@ def make_context_config(name='default', rootless=None, uid=None, gid=None):
     if gid is None:
         gid = egid
 
-    cfg_base, sto_base, _ = default_base_paths(rootless=rootless, uid=uid)
+    if not configs_dir or not storage_dir:
+        cfg_base, sto_base, _ = default_base_paths(rootless=rootless, uid=uid)
+    if configs_dir:
+        cfg_base = Path(configs_dir)
+    if storage_dir:
+        sto_base = Path(storage_dir)
+
     ctx_path = (Path(cfg_base) / name).with_suffix('.toml')
     do_chown = uid != euid or gid != egid
 
@@ -50,13 +57,16 @@ def make_context_config(name='default', rootless=None, uid=None, gid=None):
         os.chown(ctx_path, uid, gid)
 
     # Write context to file
-    context = default_context(name, rootless=rootless, uid=uid, gid=gid)
+    context = default_context(
+        name=name, rootless=rootless, uid=uid, gid=gid,
+        configs_dir=configs_dir, storage_dir=storage_dir,
+    )
     ctx_path.write_text(toml.dumps(context))
 
     # Ensure all context's subdirs exist
     dirs = [
-        (Path(context['config']['base']), 0o775),
-        (Path(context['config']['secrets']), 0o770),
+        (Path(context['configs']['base']), 0o775),
+        (Path(context['configs']['secrets']), 0o770),
         (Path(context['storage']['images']), 0o775),
         (Path(context['storage']['containers']), 0o770),
         (Path(context['storage']['volumes']), 0o770),

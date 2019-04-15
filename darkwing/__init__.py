@@ -127,9 +127,9 @@ def version_cmd(args):
     raise NotImplementedError
 
 def main():
-    Parse subcommand
+    # Parse subcommand
 
-    Parse args
+    # Parse args
 
     raise NotImplementedError
 

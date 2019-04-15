@@ -16,11 +16,15 @@ def default_base_paths(rootless=None, uid=None):
     if rootless is None:
         rootless = not probably_root()
 
+    euid = os.geteuid()
     if uid is None:
-        uid = os.geteuid()
+        uid = euid
 
     if rootless:
-        home = Path(pwd.getpwuid(uid).pw_dir)
+        if uid != euid:
+            home = Path(pwd.getpwuid(uid).pw_dir)
+        else:
+            home = Path.home()
         configs = home / '.darkwing'
         storage = home / '.local/share/darkwing'
     else:
@@ -31,7 +35,8 @@ def default_base_paths(rootless=None, uid=None):
 
     return configs, storage, runtime
 
-def default_context(name='default', rootless=None, uid=None, gid=None):
+def default_context(name='default', rootless=None, uid=None,
+                    gid=None, configs_dir=None, storage_dir=None):
     if rootless is None:
         rootless = not probably_root()
 
@@ -41,6 +46,10 @@ def default_context(name='default', rootless=None, uid=None, gid=None):
         gid = os.getegid()
 
     base_cfg, base_sto, base_run = default_base_paths(rootless, uid)
+    if configs_dir:
+        base_cfg = Path(configs_dir)
+    if storage_dir:
+        base_sto = Path(storage_dir)
 
     return {
         'domain': f"{name}.darkwing.local",
