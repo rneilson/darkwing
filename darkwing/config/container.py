@@ -5,12 +5,11 @@ from pathlib import Path
 from darkwing.utils import probably_root
 from .defaults import default_base_paths, default_container
 
-def get_container_config(name, context):
-    cfg_base = context['configs']['base']
-    con_path = (Path(cfg_base) / name).with_suffix('.toml')
+def get_container_config(name, config_base):
+    cfg_path = (Path(config_base) / name).with_suffix('.toml')
 
-    if con_path.exists():
-        return toml.load(con_path), con_path
+    if cfg_path.exists():
+        return toml.load(cfg_path), cfg_path
 
     return None, None
 
@@ -20,40 +19,43 @@ def make_container_config(name, context, image=None,
     egid = os.getegid()
     
     cfg_base = Path(context['configs']['base'])
-    sec_base = Path(context['configs']['secrets'])
-    con_path = (cfg_base / name).with_suffix('.toml')
+    cfg_path = (cfg_base / name).with_suffix('.toml')
     cfg_user = context['user']
     do_chown = cfg_user['uid'] != euid or cfg_user['gid'] != egid
 
-    # Create any parent dir(s)
-    dirs = [
-        (cfg_base, 0o775),
-        (sec_base, 0o770),
-    ]
-    for dir_path, dir_mode in dirs:
-        if not dir_path.exists():
-            dir_path.mkdir(mode=dir_mode, parents=True)
-            if do_chown:
-                os.chown(dir_path, uid, gid)
+    # Create config parent dir(s)
+    if not cfg_base.exists():
+        cfg_base.mkdir(mode=0o775, parents=True)
+        if do_chown:
+            os.chown(cfg_base, uid, gid)
 
     # Touch mostly to raise FileExistsError
-    con_path.touch(mode=0o664, exist_ok=False)
+    cfg_path.touch(mode=0o664, exist_ok=False)
     if do_chown:
-        os.chown(con_path, uid, gid)
+        os.chown(cfg_path, uid, gid)
+
+    # TODO: insert/compare other config elements
 
     # Write config to file
     container = default_container(
         name, context, image=image, tag=tag, uid=uid, gid=gid
     )
-    con_path.write_text(toml.dumps(container))
+    cfg_path.write_text(toml.dumps(container))
 
-    # Ensure any secrets dirs created
+    # Required storage dirs
+    dirs = [
+        (Path(container['storage']['base']), 0o770),
+        (Path(container['storage']['volumes']), 0o770),
+    ]
+    # Ensure any secrets dirs created as well
     for secret in container['secrets']:
         if secret.get('source') and secret.get('copy') is True:
-            sec_path = Path(secret['source'])
-            if not sec_path.exists():
-                sec_path.mkdir(mode=0o770, parents=True)
-                if do_chown:
-                    os.chown(sec_path, cfg_user['uid'], cfg_user['gid'])
+            dirs.append((Path(secret['source']), 0o770))
+    # Now ensure all created
+    for dir_path, dir_mode in dirs:
+        if not dir_path.exists():
+            dir_path.mkdir(mode=dir_mode, parents=True)
+            if do_chown:
+                os.chown(dir_path, cfg_user['uid'], cfg_user['gid'])
 
-    return container, con_path
+    return container, cfg_path

@@ -79,25 +79,47 @@ def default_container(name, context, image=None, tag='latest', uid=0, gid=0):
     if image is None:
         image = name
 
+    image_path = Path(context['storage']['images']) / 'oci' / image
+    storage_path = Path(context['storage']['containers']) / name
     runtime_path = Path(context['runtime']['base']) / name
     secrets_path = Path(context['configs']['secrets']) / name
 
     return {
-        'hostname': f"{name}.{context['domain']}",
-        'terminal': False,
         'image': {
             'type': 'oci',
-            'image': image,
+            'path': str(image_path),
             'tag': tag,
         },
-        'env': {
-            'vars': {},
-            'files': [],
+        'storage': {
+            'base': str(storage_path),
+            'volumes': str(storage_path / 'volumes'),
         },
         'runtime': {
             'base': str(runtime_path),
             'secrets': str(runtime_path / 'secrets'),
         },
+        'cmd': {
+            'cwd': '',
+            'args': [],
+            'terminal': False,
+        },
+        'env': {
+            'vars': {},
+            'files': [],
+        },
+        'user': {
+            'uid': uid,
+            'gid': gid,
+        },
+        'caps': {
+            'add': [],
+            'drop': [],
+        },
+        'dns': {
+            'hostname': f"{name}.{context['domain']}",
+            'domain': context['domain'],
+        },
+        'network': { **context['network'] },
         'secrets': [
             {
                 'source': str(secrets_path),
@@ -113,12 +135,4 @@ def default_container(name, context, image=None, tag='latest', uid=0, gid=0):
                 'readonly': True,
             },
         ],
-        'user': {
-            'uid': uid,
-            'gid': gid,
-        },
-        'caps': {
-            'add': [],
-            'drop': [],
-        }
     }
