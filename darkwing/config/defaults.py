@@ -92,7 +92,7 @@ def default_container(name, context, image=None, tag='latest', uid=0, gid=0):
         },
         'storage': {
             'base': str(storage_path),
-            'volumes': str(storage_path / 'volumes'),
+            'secrets': str(secrets_path),
         },
         'runtime': {
             'base': str(runtime_path),
@@ -104,7 +104,8 @@ def default_container(name, context, image=None, tag='latest', uid=0, gid=0):
             'terminal': False,
         },
         'env': {
-            'vars': {},
+            'host': [],
+            'vars': [],
             'files': [],
         },
         'user': {
@@ -120,19 +121,26 @@ def default_container(name, context, image=None, tag='latest', uid=0, gid=0):
             'domain': context['domain'],
         },
         'network': { **context['network'] },
-        'secrets': [
-            {
-                'source': str(secrets_path),
-                'target': str(runtime_path / 'secrets'),
-                'copy': True,
-            },
-        ],
-        'volumes': [
-            {
-                'source': str(runtime_path / 'secrets'),
-                'target': '/run/secrets',
-                'type': 'bind',
-                'readonly': True,
-            },
-        ],
+        'secrets': {
+            'target': str(runtime_path / 'secrets'),
+            'sources': [
+                {
+                    'path': str(secrets_path),
+                    'copy': True,
+                    'mode': 0o400,
+                },
+            ],
+        },
+        'volumes': {
+            'shared': context['storage']['volumes'],
+            'private': str(storage_path / 'volumes'),
+            'mounts': [
+                {
+                    'source': str(runtime_path / 'secrets'),
+                    'target': '/run/secrets',
+                    'type': 'bind',
+                    'readonly': True,
+                },
+            ],
+        },
     }

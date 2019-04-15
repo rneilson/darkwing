@@ -5,16 +5,15 @@ from pathlib import Path
 from darkwing.utils import probably_root
 from .defaults import default_base_paths, default_container
 
-def get_container_config(name, config_base):
-    cfg_path = (Path(config_base) / name).with_suffix('.toml')
+def get_container_config(name, config_dir):
+    cfg_path = (Path(config_dir) / name).with_suffix('.toml')
 
     if cfg_path.exists():
         return toml.load(cfg_path), cfg_path
 
     return None, None
 
-def make_container_config(name, context, image=None,
-                          tag='latest', uid=0, gid=0):
+def make_container_config(name, context, image=None, tag='latest', uid=0, gid=0):
     euid = os.geteuid()
     egid = os.getegid()
     
@@ -45,12 +44,9 @@ def make_container_config(name, context, image=None,
     # Required storage dirs
     dirs = [
         (Path(container['storage']['base']), 0o770),
-        (Path(container['storage']['volumes']), 0o770),
+        (Path(container['storage']['secrets']), 0o700),
+        (Path(container['volumes']['private']), 0o770),
     ]
-    # Ensure any secrets dirs created as well
-    for secret in container['secrets']:
-        if secret.get('source') and secret.get('copy') is True:
-            dirs.append((Path(secret['source']), 0o770))
     # Now ensure all created
     for dir_path, dir_mode in dirs:
         if not dir_path.exists():
