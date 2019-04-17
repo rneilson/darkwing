@@ -2,7 +2,7 @@ import os
 import toml
 from pathlib import Path
 
-from darkwing.utils import probably_root
+from darkwing.utils import probably_root, get_runtime_dir
 from .defaults import default_base_paths, default_container
 
 def get_container_config(name, context_name='default',
@@ -22,10 +22,12 @@ def get_container_config(name, context_name='default',
 
     return None, None
 
-def make_container_config(name, context, image=None,
-                          tag='latest', uid=0, gid=0):
-    euid = os.geteuid()
-    egid = os.getegid()
+def make_container_config(name, context, image=None, tag='latest',
+                          uid=0, gid=0, euid=None, egid=None):
+    if euid is None:
+        euid = os.geteuid()
+    if egid is None:
+        egid = os.getegid()
     
     cfg_base = Path(context['configs']['base'])
     cfg_path = (cfg_base / name).with_suffix('.toml')
@@ -37,12 +39,12 @@ def make_container_config(name, context, image=None,
     if not cfg_base.exists():
         cfg_base.mkdir(mode=0o775, parents=True)
         if do_chown:
-            os.chown(cfg_base, uid, gid)
+            os.chown(cfg_base, owner['uid'], owner['gid'])
 
     # Touch mostly to raise FileExistsError
     cfg_path.touch(mode=0o664, exist_ok=False)
     if do_chown:
-        os.chown(cfg_path, uid, gid)
+        os.chown(cfg_path, owner['uid'], owner['gid'])
 
     # TODO: insert/compare other config elements
 

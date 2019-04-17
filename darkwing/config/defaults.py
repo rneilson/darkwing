@@ -4,16 +4,6 @@ from pathlib import Path
 
 from darkwing.utils import probably_root
 
-def get_runtime_dir(uid=None):
-    # TODO: XDG_RUNTIME_DIR handling?
-    if uid is None:
-        uid = os.geteuid()
-    if uid:
-        path = Path('/run/user') / str(uid)
-    else:
-        path = Path('/run')
-    return path / 'darkwing'
-
 def default_base_paths(rootless=None, uid=None):
     if rootless is None:
         rootless = not probably_root()

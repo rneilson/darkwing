@@ -37,3 +37,18 @@ def user_ids(username=None, groupname=None):
         gid = grp.getgrnam(groupname).gr_gid
 
     return uid, gid
+
+def get_runtime_dir(uid=None):
+    # Give priority to XDG_RUNTIME_DIR
+    xdg_dir = os.environ.get('XDG_RUNTIME_DIR')
+    if xdg_dir:
+        path = Path(xdg_dir)
+    else:
+        if uid is None:
+            uid = os.geteuid()
+        if uid:
+            path = Path('/run/user') / str(uid)
+        else:
+            path = Path('/run')
+
+    return path / 'darkwing'
