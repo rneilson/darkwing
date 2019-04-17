@@ -11,7 +11,7 @@ def get_context_config(name='default', dirs=None, rootless=None, uid=None):
 
     if dirs is None:
         cwd_base = Path.cwd() / '.darkwing'
-        cfg_base, _, _ = default_base_paths(rootless=rootless, uid=uid)
+        cfg_base, _ = default_base_paths(rootless=rootless, uid=uid)
         dirs = [cwd_base, cfg_base]
 
     for dirp in dirs:
@@ -35,7 +35,7 @@ def make_context_config(name='default', rootless=None, uid=None,
         gid = egid
 
     if not configs_dir or not storage_dir:
-        cfg_base, sto_base, _ = default_base_paths(rootless=rootless, uid=uid)
+        cfg_base, sto_base = default_base_paths(rootless=rootless, uid=uid)
     if configs_dir:
         cfg_base = Path(configs_dir)
     if storage_dir:

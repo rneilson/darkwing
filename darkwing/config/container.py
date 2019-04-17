@@ -5,22 +5,33 @@ from pathlib import Path
 from darkwing.utils import probably_root
 from .defaults import default_base_paths, default_container
 
-def get_container_config(name, config_dir):
-    cfg_path = (Path(config_dir) / name).with_suffix('.toml')
+def get_container_config(name, context_name='default',
+                         dirs=None, rootless=None, uid=None):
+    if rootless is None:
+        rootless = not probably_root()
 
-    if cfg_path.exists():
-        return toml.load(cfg_path), cfg_path
+    if dirs is None:
+        cwd_base = Path.cwd() / '.darkwing'
+        cfg_base, _ = default_base_paths(rootless=rootless, uid=uid)
+        dirs = [cwd_base, cfg_base]
+
+    for dirp in dirs:
+        cfg_path = (Path(dirp) / context_name / name).with_suffix('.toml')
+        if cfg_path.exists():
+            return toml.load(cfg_path), cfg_path
 
     return None, None
 
-def make_container_config(name, context, image=None, tag='latest', uid=0, gid=0):
+def make_container_config(name, context, image=None,
+                          tag='latest', uid=0, gid=0):
     euid = os.geteuid()
     egid = os.getegid()
     
     cfg_base = Path(context['configs']['base'])
     cfg_path = (cfg_base / name).with_suffix('.toml')
-    cfg_user = context['user']
-    do_chown = cfg_user['uid'] != euid or cfg_user['gid'] != egid
+
+    owner = context['owner']
+    do_chown = owner['uid'] != euid or owner['gid'] != egid
 
     # Create config parent dir(s)
     if not cfg_base.exists():
@@ -52,6 +63,6 @@ def make_container_config(name, context, image=None, tag='latest', uid=0, gid=0)
         if not dir_path.exists():
             dir_path.mkdir(mode=dir_mode, parents=True)
             if do_chown:
-                os.chown(dir_path, cfg_user['uid'], cfg_user['gid'])
+                os.chown(dir_path, owner['uid'], owner['gid'])
 
     return container, cfg_path
