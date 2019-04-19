@@ -14,13 +14,13 @@ def get_container_config(name, context_name='default',
 
     if dirs is None:
         cwd_base = Path.cwd() / '.darkwing'
-        cfg_base, _ = default_base_paths(rootless=rootless, uid=uid)
-        dirs = [cwd_base, cfg_base]
+        config_base, _ = default_base_paths(rootless, uid)
+        dirs = [cwd_base, config_base]
 
     for dirp in dirs:
-        cfg_path = (Path(dirp) / context_name / name).with_suffix('.toml')
-        if cfg_path.exists():
-            return toml.load(cfg_path), cfg_path
+        config_path = (Path(dirp) / context_name / name).with_suffix('.toml')
+        if config_path.exists():
+            return toml.load(config_path), config_path
 
     return None, None
 
@@ -31,8 +31,8 @@ def make_container_config(name, context, image=None, tag='latest', uid=0,
     if egid is None:
         egid = os.getegid()
     
-    cfg_base = Path(context['configs']['base'])
-    cfg_path = (cfg_base / name).with_suffix('.toml')
+    config_base = Path(context['configs']['base'])
+    config_path = (config_base / name).with_suffix('.toml')
 
     owner = context['owner']
     do_chown = owner['uid'] != euid or owner['gid'] != egid
@@ -40,37 +40,37 @@ def make_container_config(name, context, image=None, tag='latest', uid=0,
 
     # Start with default config
     # TODO: insert/compare other config elements
-    container = default_container(
+    config = default_container(
         name, context, image=image, tag=tag, uid=uid, gid=gid
     )
 
     if write_file:
         # Ensure all required config, storage dirs created
         dirs = [
-            (cfg_base, 0o775),
-            (Path(container['storage']['base']), 0o770),
-            (Path(container['storage']['secrets']), 0o700),
-            (Path(container['volumes']['private']), 0o770),
+            (config_base, 0o775),
+            (Path(config['storage']['base']), 0o770),
+            (Path(config['storage']['secrets']), 0o700),
+            (Path(config['volumes']['private']), 0o770),
         ]
         ensure_dirs(dirs, uid=ouid, gid=ogid)
 
         # Write config to file
         # Touch mostly to raise FileExistsError
-        cfg_path.touch(mode=0o664, exist_ok=False)
+        config_path.touch(mode=0o664, exist_ok=False)
         if do_chown:
-            os.chown(cfg_path, uid=ouid, gid=ogid)
-        cfg_path.write_text(toml.dumps(container))
+            os.chown(config_path, uid=ouid, gid=ogid)
+        config_path.write_text(toml.dumps(config))
 
-    return container, cfg_path
+    return config, config_path
 
 def make_runtime_dir(name, config, context_name='default',
                      runtime_dir=None, uid=None, gid=None):
     if runtime_dir is None:
-        runtime_dir = get_runtime_dir(uid=uid)
+        runtime_base = get_runtime_dir(uid=uid)
     else:
-        runtime_dir = Path(runtime_dir)
+        runtime_base = Path(runtime_base)
 
-    runtime_path = runtime_dir / context_name / name
+    runtime_path = runtime_base / context_name / name
     secrets_path = runtime_path / 'secrets'
     volumes_path = runtime_path / 'volumes'
 

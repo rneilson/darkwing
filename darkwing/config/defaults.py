@@ -36,21 +36,21 @@ def default_context(name='default', rootless=None, uid=None,
         gid = os.getegid()
 
     if not configs_dir or not storage_dir:
-        base_cfg, base_sto = default_base_paths(rootless, uid)
+        configs_base, storage_base = default_base_paths(rootless, uid)
     if configs_dir:
-        base_cfg = Path(configs_dir)
+        configs_base = Path(configs_dir)
     if storage_dir:
-        base_sto = Path(storage_dir)
+        storage_base = Path(storage_dir)
 
     return {
         'configs': {
-            'base': str(base_cfg / name),
-            'secrets': str(base_cfg / name / '.secrets'),
+            'base': str(configs_base / name),
+            'secrets': str(configs_base / name / '.secrets'),
         },
         'storage': {
-            'images': str(base_sto / 'images'),
-            'volumes': str(base_sto / 'volumes' / name),
-            'containers': str(base_sto / 'containers' / name),
+            'images': str(storage_base / 'images'),
+            'volumes': str(storage_base / 'volumes' / name),
+            'containers': str(storage_base / 'containers' / name),
         },
         'dns': {
             'domain': f"{name}.darkwing.local",
@@ -113,7 +113,7 @@ def default_container(name, context, image=None, tag='latest', uid=0, gid=0):
                 {
                     'path': str(secrets_path),
                     'type': 'copy',
-                    'mode': '400',
+                    'mode': '0400',
                 },
             ],
         },
