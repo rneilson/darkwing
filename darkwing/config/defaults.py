@@ -113,7 +113,7 @@ def default_container(name, context, image=None, tag='latest', uid=0, gid=0):
                 {
                     'path': str(secrets_path),
                     'type': 'copy',
-                    'mode': 0o400,
+                    'mode': '400',
                 },
             ],
         },

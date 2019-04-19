@@ -59,6 +59,27 @@ def ensure_dirs(dirs, uid=None, gid=None):
 
     return created
 
+def ensure_files(files, uid=None, gid=None):
+    do_chown = uid is not None or gid is not None
+    if do_chown:
+        # Leave unchanged if not given
+        if uid is None:
+            uid = -1
+        if gid is None:
+            gid = -1
+
+    created = []
+
+    for file_path, file_mode in files:
+        file_path = Path(file_path)
+        if not file_path.exists():
+            file_path.touch(mode=file_mode, exist_ok=False)
+            if do_chown:
+                os.chown(file_path, uid, gid)
+            created.append(file_path)
+
+    return created
+
 def get_runtime_dir(uid=None):
     # Give priority to XDG_RUNTIME_DIR
     xdg_dir = os.environ.get('XDG_RUNTIME_DIR')
