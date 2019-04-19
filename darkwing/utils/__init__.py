@@ -38,6 +38,27 @@ def user_ids(username=None, groupname=None):
 
     return uid, gid
 
+def ensure_dirs(dirs, uid=None, gid=None):
+    do_chown = uid is not None or gid is not None
+    if do_chown:
+        # Leave unchanged if not given
+        if uid is None:
+            uid = -1
+        if gid is None:
+            gid = -1
+
+    created = []
+
+    for dir_path, dir_mode in dirs:
+        dir_path = Path(dir_path)
+        if not dir_path.exists():
+            dir_path.mkdir(mode=dir_mode, parents=True)
+            if do_chown:
+                os.chown(dir_path, uid, gid)
+            created.append(dir_path)
+
+    return created
+
 def get_runtime_dir(uid=None):
     # Give priority to XDG_RUNTIME_DIR
     xdg_dir = os.environ.get('XDG_RUNTIME_DIR')

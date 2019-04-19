@@ -8,11 +8,11 @@ def default_base_paths(rootless=None, uid=None):
     if rootless is None:
         rootless = not probably_root()
 
-    euid = os.geteuid()
-    if uid is None:
-        uid = euid
-
     if rootless:
+        euid = os.geteuid()
+        if uid is None:
+            uid = euid
+
         if uid != euid:
             home = Path(pwd.getpwuid(uid).pw_dir)
         else:

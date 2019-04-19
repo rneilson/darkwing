@@ -2,7 +2,7 @@ import os
 import toml
 from pathlib import Path
 
-from darkwing.utils import probably_root
+from darkwing.utils import probably_root, ensure_dirs
 from .defaults import default_base_paths, default_context
 
 def get_context_config(name='default', dirs=None, rootless=None, uid=None):
@@ -21,8 +21,8 @@ def get_context_config(name='default', dirs=None, rootless=None, uid=None):
 
     return None, None
 
-def make_context_config(name='default', rootless=None, uid=None,
-                        gid=None, configs_dir=None, storage_dir=None):
+def make_context_config(name='default', rootless=None, uid=None, gid=None,
+                        configs_dir=None, storage_dir=None, write_file=True):
     if rootless is None:
         rootless = not probably_root()
 
@@ -43,38 +43,33 @@ def make_context_config(name='default', rootless=None, uid=None,
 
     ctx_path = (Path(cfg_base) / name).with_suffix('.toml')
     do_chown = uid != euid or gid != egid
+    ouid, ogid = (uid, gid) if do_chown else (None, None)
 
-    # Create any parent dir(s)
-    for dir_path in [cfg_base, sto_base]:
-        if not dir_path.exists():
-            dir_path.mkdir(mode=0o775, parents=True)
-            if do_chown:
-                os.chown(dir_path, uid, gid)
-
-    # Touch mostly to raise FileExistsError
-    ctx_path.touch(mode=0o664, exist_ok=False)
-    if do_chown:
-        os.chown(ctx_path, uid, gid)
-
-    # Write context to file
+    # Start with default config
+    # TODO: insert/compare other config elements
     context = default_context(
         name=name, rootless=rootless, uid=uid, gid=gid,
         configs_dir=configs_dir, storage_dir=storage_dir,
     )
-    ctx_path.write_text(toml.dumps(context))
 
-    # Ensure all context's subdirs exist
-    dirs = [
-        (Path(context['configs']['base']), 0o775),
-        (Path(context['configs']['secrets']), 0o770),
-        (Path(context['storage']['images']), 0o775),
-        (Path(context['storage']['containers']), 0o770),
-        (Path(context['storage']['volumes']), 0o770),
-    ]
-    for dir_path, dir_mode in dirs:
-        if not dir_path.exists():
-            dir_path.mkdir(mode=dir_mode, parents=True)
-            if do_chown:
-                os.chown(dir_path, uid, gid)
+    if write_file:
+        # Ensure all context's subdirs exist
+        dirs = [
+            (cfg_base, 0o775),
+            (sto_base, 0o775),
+            (Path(context['configs']['base']), 0o775),
+            (Path(context['configs']['secrets']), 0o770),
+            (Path(context['storage']['images']), 0o775),
+            (Path(context['storage']['containers']), 0o770),
+            (Path(context['storage']['volumes']), 0o770),
+        ]
+        ensure_dirs(dirs, uid=ouid, gid=ogid)
+
+        # Write context to file
+        # Touch mostly to raise FileExistsError
+        ctx_path.touch(mode=0o664, exist_ok=False)
+        if do_chown:
+            os.chown(ctx_path, uid, gid)
+        ctx_path.write_text(toml.dumps(context))
 
     return context, ctx_path

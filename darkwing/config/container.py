@@ -2,7 +2,7 @@ import os
 import toml
 from pathlib import Path
 
-from darkwing.utils import probably_root, get_runtime_dir
+from darkwing.utils import probably_root, get_runtime_dir, ensure_dirs
 from .defaults import default_base_paths, default_container
 
 def get_container_config(name, context_name='default',
@@ -22,8 +22,8 @@ def get_container_config(name, context_name='default',
 
     return None, None
 
-def make_container_config(name, context, image=None, tag='latest',
-                          uid=0, gid=0, euid=None, egid=None):
+def make_container_config(name, context, image=None, tag='latest', uid=0,
+                          gid=0, euid=None, egid=None, write_file=True):
     if euid is None:
         euid = os.geteuid()
     if egid is None:
@@ -34,37 +34,29 @@ def make_container_config(name, context, image=None, tag='latest',
 
     owner = context['owner']
     do_chown = owner['uid'] != euid or owner['gid'] != egid
+    ouid, ogid = (owner['uid'], owner['gid']) if do_chown else (None, None)
 
-    # Create config parent dir(s)
-    if not cfg_base.exists():
-        cfg_base.mkdir(mode=0o775, parents=True)
-        if do_chown:
-            os.chown(cfg_base, owner['uid'], owner['gid'])
-
-    # Touch mostly to raise FileExistsError
-    cfg_path.touch(mode=0o664, exist_ok=False)
-    if do_chown:
-        os.chown(cfg_path, owner['uid'], owner['gid'])
-
+    # Start with default config
     # TODO: insert/compare other config elements
-
-    # Write config to file
     container = default_container(
         name, context, image=image, tag=tag, uid=uid, gid=gid
     )
-    cfg_path.write_text(toml.dumps(container))
 
-    # Required storage dirs
-    dirs = [
-        (Path(container['storage']['base']), 0o770),
-        (Path(container['storage']['secrets']), 0o700),
-        (Path(container['volumes']['private']), 0o770),
-    ]
-    # Now ensure all created
-    for dir_path, dir_mode in dirs:
-        if not dir_path.exists():
-            dir_path.mkdir(mode=dir_mode, parents=True)
-            if do_chown:
-                os.chown(dir_path, owner['uid'], owner['gid'])
+    if write_file:
+        # Ensure all required config, storage dirs created
+        dirs = [
+            (cfg_base, 0o775),
+            (Path(container['storage']['base']), 0o770),
+            (Path(container['storage']['secrets']), 0o700),
+            (Path(container['volumes']['private']), 0o770),
+        ]
+        ensure_dirs(dirs, uid=ouid, gid=ogid)
+
+        # Write config to file
+        # Touch mostly to raise FileExistsError
+        cfg_path.touch(mode=0o664, exist_ok=False)
+        if do_chown:
+            os.chown(cfg_path, *owner_ids)
+        cfg_path.write_text(toml.dumps(container))
 
     return container, cfg_path
