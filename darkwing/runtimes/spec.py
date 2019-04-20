@@ -10,19 +10,18 @@ def _split_args(args):
         return []
     return args
 
-def _update_capabilities(caps, add, drop):
+def _update_capabilities(caps, caps_config):
     new_caps = {}
-    drop_set = set(drop)
 
     for kind, cap_list in caps.items():
-        new_list = [ c for c in cap_list if c not in drop_set ]
+        new_list = [c for c in cap_list if c not in set(caps_config['drop'])]
         new_set = set(new_list)
-        new_list.extend(c for c in add if c not in new_set)
+        new_list.extend(c for c in caps_config['add'] if c not in new_set)
         new_caps[kind] = new_list
 
     return new_caps
 
-def _update_environment(env, fixed, host, files):
+def _update_environment(env, env_config):
     env_vars = {}
 
     # First expand into dictionary
@@ -31,7 +30,7 @@ def _update_environment(env, fixed, host, files):
         env_vars[name] = value
 
     # Set/unset fixed
-    for var in fixed:
+    for var in env_config['fixed']:
         name, sep, value = var.partition('=')
         if sep:
             env_vars[name] = value
@@ -39,7 +38,7 @@ def _update_environment(env, fixed, host, files):
             env_vars.pop(name, None)
 
     # Set from host env
-    for var in host:
+    for var in env_config['host']:
         name, sep, value = var.partition('=')
         hostval = os.environ.get(name)
         # Set if present in host, use default if given, or unset if not
@@ -116,7 +115,7 @@ def _update_id_maps(id_maps, container_id, host_id):
 
     return new_maps
 
-def update_spec_file(config, ouid=None, ogid=None):
+def update_spec_file(config, runtime, ouid=None, ogid=None):
     # Get config file
     spec_path = Path(config['storage']['base']) / 'config.json'
     spec = json.loads(spec_path.read_text())
@@ -145,19 +144,15 @@ def update_spec_file(config, ouid=None, ogid=None):
     # Capabilities, slightly special
     if config['caps']['add'] or config['caps']['drop']:
         proc['capabilities'] = _update_capabilities(
-            proc['capabilities'], config['caps']['add'],
-            config['caps']['drop']
+            proc['capabilities'], config['caps']
         )
 
     # Update environment
-    proc['env'] = _update_environment(
-        proc['env'], config['env']['vars'],
-        config['env']['host'], config['env']['files']
-    )
+    proc['env'] = _update_environment(proc['env'], config['env'])
 
     # Update mounts
     spec['mounts'] = _update_mounts(
-        spec['mounts'], config['volumes'], config.get('runtime')
+        spec['mounts'], config['volumes'], runtime
     )
 
     # Update rootless mapped uid/gid
