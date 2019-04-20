@@ -14,6 +14,12 @@ class Context(object):
         # TODO: expand
         self.data = data
 
+    def __repr__(self):
+        return (
+            f"<{self.__class__.__name__} name={self.name!r} "
+            f"path={str(self.path)!r}>"
+        )
+
 
 def get_context_config(name='default', dirs=None, rootless=None, uid=None):
     if rootless is None:
