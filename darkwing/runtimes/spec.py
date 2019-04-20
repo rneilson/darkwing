@@ -1,6 +1,14 @@
 import os
 import json
+import shlex
 from pathlib import Path
+
+def _split_args(args):
+    if isinstance(args, str):
+        return shlex.split(args)
+    elif not args:
+        return []
+    return args
 
 def _update_capabilities(caps, add, drop):
     new_caps = {}
@@ -125,9 +133,14 @@ def update_spec_file(config, ouid=None, ogid=None):
     if config['exec']['dir']:
         proc['cwd'] = config['exec']['dir']
     if config['exec']['cmd']:
-        proc['args'][0] = config['exec']['cmd']
-    if config['exec']['args']:
-        proc['args'][1:] = config['exec']['args']
+        # Overwrite args, even if empty
+        proc['args'] = [
+            config['exec']['cmd'],
+            *_split_args(config['exec']['args'])
+        ]
+    elif config['exec']['args']:
+        # Leave command alone, replace args
+        proc['args'][1:] = _split_args(config['exec']['args'])
 
     # Capabilities, slightly special
     if config['caps']['add'] or config['caps']['drop']:
