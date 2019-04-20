@@ -25,22 +25,25 @@ def default_base_paths(rootless=None, uid=None):
 
     return configs, storage
 
-def default_context(name='default', rootless=None, uid=None,
-                    gid=None, configs_dir=None, storage_dir=None):
+def default_context(name='default', rootless=None, ouid=None, ogid=None,
+                    configs_dir=None, storage_dir=None, base_domain=None):
     if rootless is None:
         rootless = not probably_root()
 
-    if uid is None:
-        uid = os.geteuid()
-    if gid is None:
-        gid = os.getegid()
+    if ouid is None:
+        ouid = os.geteuid()
+    if ogid is None:
+        ogid = os.getegid()
 
     if not configs_dir or not storage_dir:
-        configs_base, storage_base = default_base_paths(rootless, uid)
+        configs_base, storage_base = default_base_paths(rootless, ouid)
     if configs_dir:
         configs_base = Path(configs_dir)
     if storage_dir:
         storage_base = Path(storage_dir)
+
+    if base_domain is None:
+        base_domain = 'darkwing.local'
 
     return {
         'configs': {
@@ -53,14 +56,14 @@ def default_context(name='default', rootless=None, uid=None,
             'containers': str(storage_base / 'containers' / name),
         },
         'dns': {
-            'domain': f"{name}.darkwing.local",
+            'domain': '.'.join(filter(None, [name, base_domain])),
         },
         'network': {
             'type': 'host',
         },
         'owner': {
-            'uid': uid,
-            'gid': gid,
+            'uid': ouid,
+            'gid': ogid,
             'rootless': rootless,
         },
     }

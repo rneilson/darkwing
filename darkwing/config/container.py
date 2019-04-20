@@ -36,7 +36,7 @@ def make_container_config(name, context, image=None, tag='latest', uid=0,
 
     owner = context['owner']
     do_chown = owner['uid'] != euid or owner['gid'] != egid
-    ouid, ogid = (owner['uid'], owner['gid']) if do_chown else (None, None)
+    cuid, cgid = (owner['uid'], owner['gid']) if do_chown else (None, None)
 
     # Start with default config
     # TODO: insert/compare other config elements
@@ -52,13 +52,13 @@ def make_container_config(name, context, image=None, tag='latest', uid=0,
             (Path(config['storage']['secrets']), 0o700),
             (Path(config['volumes']['private']), 0o770),
         ]
-        ensure_dirs(dirs, uid=ouid, gid=ogid)
+        ensure_dirs(dirs, uid=cuid, gid=cgid)
 
         # Write config to file
         # Touch mostly to raise FileExistsError
         config_path.touch(mode=0o664, exist_ok=False)
         if do_chown:
-            os.chown(config_path, uid=ouid, gid=ogid)
+            os.chown(config_path, uid=cuid, gid=cgid)
         config_path.write_text(toml.dumps(config))
 
     return config, config_path

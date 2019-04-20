@@ -21,35 +21,37 @@ def get_context_config(name='default', dirs=None, rootless=None, uid=None):
 
     return None, None
 
-def make_context_config(name='default', rootless=None, uid=None, gid=None,
-                        configs_dir=None, storage_dir=None, write_file=True):
+def make_context_config(name='default', rootless=None, ouid=None,
+                        ogid=None, configs_dir=None, storage_dir=None,
+                        base_domain=None, write_file=True):
     if rootless is None:
         rootless = not probably_root()
 
     euid = os.geteuid()
     egid = os.getegid()
 
-    if uid is None:
-        uid = euid
-    if gid is None:
-        gid = egid
+    if ouid is None:
+        ouid = euid
+    if ogid is None:
+        ogid = egid
 
     if not configs_dir or not storage_dir:
-        configs_base, storage_base = default_base_paths(rootless, uid)
+        configs_base, storage_base = default_base_paths(rootless, ouid)
     if configs_dir:
         configs_base = Path(configs_dir)
     if storage_dir:
         storage_base = Path(storage_dir)
 
     context_path = (Path(configs_base) / name).with_suffix('.toml')
-    do_chown = uid != euid or gid != egid
-    ouid, ogid = (uid, gid) if do_chown else (None, None)
+    do_chown = ouid != euid or ogid != egid
+    cuid, cgid = (ouid, ogid) if do_chown else (None, None)
 
     # Start with default config
     # TODO: insert/compare other config elements
     context = default_context(
-        name=name, rootless=rootless, uid=uid, gid=gid,
+        name=name, rootless=rootless, ouid=ouid, ogid=ogid,
         configs_dir=configs_dir, storage_dir=storage_dir,
+        base_domain=base_domain,
     )
 
     if write_file:
@@ -63,13 +65,13 @@ def make_context_config(name='default', rootless=None, uid=None, gid=None,
             (Path(context['storage']['containers']), 0o770),
             (Path(context['storage']['volumes']), 0o770),
         ]
-        ensure_dirs(dirs, uid=ouid, gid=ogid)
+        ensure_dirs(dirs, uid=cuid, gid=cgid)
 
         # Write context to file
         # Touch mostly to raise FileExistsError
         context_path.touch(mode=0o664, exist_ok=False)
         if do_chown:
-            os.chown(context_path, uid, gid)
+            os.chown(context_path, cuid, cgid)
         context_path.write_text(toml.dumps(context))
 
     return context, context_path
