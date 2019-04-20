@@ -9,7 +9,7 @@ from darkwing.utils import probably_root, simple_command
 def fetch_image():
     raise NotImplementedError
 
-def unpack_image(config, rootless=None, write_output=True):
+def unpack_image(config, rootless=None, write_output=True, exist_ok=True):
     if rootless is None:
         rootless = not probably_root()
 
@@ -36,18 +36,32 @@ def unpack_image(config, rootless=None, write_output=True):
     config_cmd.append(f"--rootfs={rootfs_path}")
     config_cmd.append(str(config_path))
 
-    # Clear out existing rootfs
-    if rootfs_path.exists():
-        print(f"Removing existing rootfs at {rootfs_path}", flush=True)
-        shutil.rmtree(rootfs_path)
+    # Clear out existing rootfs (or bail)
+    try:
+        # Using exist_ok=False here so we can EAFP
+        rootfs_path.mkdir(mode=0o770, parents=False, exist_ok=False)
+    except FileExistsError:
+        if exist_ok:
+            # Early return, assume already unpacked
+            # TODO: check if directory empty, remove if true
+            if write_output:
+                print(f"Found existing rootfs at {rootfs_path}", flush=True)
+            return storage_path
+        else:
+            if write_output:
+                print(f"Removing existing rootfs at {rootfs_path}", flush=True)
+            shutil.rmtree(rootfs_path)
+            rootfs_path.mkdir(mode=0o770)
 
-    print(f"Unpacking rootfs into {rootfs_path}", flush=True)
+    if write_output:
+        print(f"Unpacking rootfs into {rootfs_path}", flush=True)
     proc = simple_command(
         unpack_cmd, write_output=write_output, cwd=storage_path
     )
     proc.check_returncode()
 
-    print(f"Generating config at {config_path}", flush=True)
+    if write_output:
+        print(f"Generating config at {config_path}", flush=True)
     proc = simple_command(
         config_cmd, write_output=write_output, cwd=storage_path
     )
