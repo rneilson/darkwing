@@ -66,17 +66,17 @@ def make_container_config(name, context, image=None, tag='latest', uid=0,
 def make_runtime_dir(name, config, context_name='default',
                      runtime_dir=None, uid=None, gid=None):
     if runtime_dir is None:
-        runtime_base = get_runtime_dir(uid=uid)
+        rundir_base = get_runtime_dir(uid=uid)
     else:
-        runtime_base = Path(runtime_base)
+        rundir_base = Path(rundir_base)
 
-    runtime_path = runtime_base / context_name / name
-    secrets_path = runtime_path / 'secrets'
-    volumes_path = runtime_path / 'volumes'
+    rundir_path = rundir_base / context_name / name
+    secrets_path = rundir_path / 'secrets'
+    volumes_path = rundir_path / 'volumes'
 
     # Create runtime dirs
     dirs = [
-        (runtime_path, 0o770),
+        (rundir_path, 0o770),
         (secrets_path, 0o700),
         (volumes_path, 0o770),
     ]
@@ -84,9 +84,9 @@ def make_runtime_dir(name, config, context_name='default',
     ensure_dirs(dirs, uid=uid, gid=gid)
 
     # Determine runtime mounts
-    resolvconf = runtime_path / 'resolv.conf'
-    hostname = runtime_path / 'hostname'
-    # hosts = runtime_path / 'hosts'
+    resolvconf = rundir_path / 'resolv.conf'
+    hostname = rundir_path / 'hostname'
+    # hosts = rundir_path / 'hosts'
     mounts = [
         {
             'source': str(secrets_path),
@@ -127,8 +127,8 @@ def make_runtime_dir(name, config, context_name='default',
     hostname.write_text(config['dns']['hostname'])
     # TODO: write hosts?
 
-    runtime = {
-        'base': str(runtime_path),
+    rundir = {
+        'base': str(rundir_path),
         'secrets': str(secrets_path),
         'volumes': str(volumes_path),
         'resolvconf': str(resolvconf),
@@ -136,4 +136,4 @@ def make_runtime_dir(name, config, context_name='default',
         'mounts': mounts,
     }
 
-    return runtime, runtime_path
+    return rundir, rundir_path

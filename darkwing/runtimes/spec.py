@@ -30,7 +30,7 @@ def _update_environment(env, env_config):
         env_vars[name] = value
 
     # Set/unset fixed
-    for var in env_config['fixed']:
+    for var in env_config['vars']:
         name, sep, value = var.partition('=')
         if sep:
             env_vars[name] = value
@@ -53,7 +53,7 @@ def _update_environment(env, env_config):
 
     return [ f"{name}={value}" for name, value in env_vars.items() ]
 
-def _mount_spec(mount, volumes, runtime):
+def _mount_spec(mount, volumes, rundir):
     # Vary based on mount type
     mount_type = mount['type']
 
@@ -64,12 +64,12 @@ def _mount_spec(mount, volumes, runtime):
     elif mount_type == 'private':
         mount_path = Path(volumes['private']) / mount['source']
     elif mount_type == 'runtime':
-        if runtime:
-            mount_path = Path(runtime['volumes']) / mount['source']
+        if rundir:
+            mount_path = Path(rundir['volumes']) / mount['source']
         else:
             raise ValueError(
                 f'Runtime volume mount requested for '
-                f'{mount["source"]}, but no runtime config given'
+                f'{mount["source"]}, but no runtime directory given'
             )
     else:
         raise ValueError(f'Unknown mount type: "{mount_type}"')
@@ -87,16 +87,16 @@ def _mount_spec(mount, volumes, runtime):
 
     return mount_spec
 
-def _update_mounts(mounts, volumes, runtime):
+def _update_mounts(mounts, volumes, rundir):
     mount_map = { m['destination']: m for m in mounts }
     
     for mount in volumes['mounts']:
-        spec = _mount_spec(mount, volumes, runtime)
+        spec = _mount_spec(mount, volumes, rundir)
         mount_map[spec['destination']] = spec
 
-    if runtime:
-        for mount in runtime['mounts']:
-            spec = _mount_spec(mount, volumes, runtime)
+    if rundir:
+        for mount in rundir['mounts']:
+            spec = _mount_spec(mount, volumes, rundir)
             mount_map[spec['destination']] = spec
 
     return list(mount_map.values())
@@ -115,7 +115,7 @@ def _update_id_maps(id_maps, container_id, host_id):
 
     return new_maps
 
-def update_spec_file(config, runtime, ouid=None, ogid=None):
+def update_spec_file(config, rundir, ouid=None, ogid=None):
     # Get config file
     spec_path = Path(config['storage']['base']) / 'config.json'
     spec = json.loads(spec_path.read_text())
@@ -152,7 +152,7 @@ def update_spec_file(config, runtime, ouid=None, ogid=None):
 
     # Update mounts
     spec['mounts'] = _update_mounts(
-        spec['mounts'], config['volumes'], runtime
+        spec['mounts'], config['volumes'], rundir
     )
 
     # Update rootless mapped uid/gid
