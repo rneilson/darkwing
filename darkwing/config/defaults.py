@@ -90,8 +90,8 @@ def default_container(name, context, image=None, tag='latest', uid=0, gid=0):
             'terminal': False,
         },
         'env': {
-            'host': [],
             'vars': [],
+            'host': [],
             'files': [],
         },
         'user': {
