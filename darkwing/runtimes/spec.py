@@ -53,7 +53,7 @@ def _update_environment(env, env_config):
 
     return [ f"{name}={value}" for name, value in env_vars.items() ]
 
-def _mount_spec(mount, volumes, rundir):
+def _mount_spec(mount, volumes, rundir_data):
     # Vary based on mount type
     mount_type = mount['type']
 
@@ -64,8 +64,8 @@ def _mount_spec(mount, volumes, rundir):
     elif mount_type == 'private':
         mount_path = Path(volumes['private']) / mount['source']
     elif mount_type == 'runtime':
-        if rundir:
-            mount_path = Path(rundir['volumes']) / mount['source']
+        if rundir_data:
+            mount_path = Path(rundir_data['volumes']) / mount['source']
         else:
             raise ValueError(
                 f'Runtime volume mount requested for '
@@ -87,16 +87,16 @@ def _mount_spec(mount, volumes, rundir):
 
     return mount_spec
 
-def _update_mounts(mounts, volumes, rundir):
+def _update_mounts(mounts, volumes, rundir_data):
     mount_map = { m['destination']: m for m in mounts }
     
     for mount in volumes['mounts']:
-        spec = _mount_spec(mount, volumes, rundir)
+        spec = _mount_spec(mount, volumes, rundir_data)
         mount_map[spec['destination']] = spec
 
-    if rundir:
-        for mount in rundir['mounts']:
-            spec = _mount_spec(mount, volumes, rundir)
+    if rundir_data:
+        for mount in rundir_data['mounts']:
+            spec = _mount_spec(mount, volumes, rundir_data)
             mount_map[spec['destination']] = spec
 
     return list(mount_map.values())
@@ -117,42 +117,43 @@ def _update_id_maps(id_maps, container_id, host_id):
 
 def update_spec_file(config, rundir, ouid=None, ogid=None):
     # Get config file
-    spec_path = Path(config['storage']['base']) / 'config.json'
+    spec_path = Path(config.data['storage']['base']) / 'config.json'
     spec = json.loads(spec_path.read_text())
 
     # Set some basic things
-    spec['hostname'] = config['dns']['hostname']
+    spec['hostname'] = config.data['dns']['hostname']
 
     # Command/execution things
     proc = spec['process']
-    proc['user']['uid'] = config['user']['uid']
-    proc['user']['gid'] = config['user']['gid']
-    proc['terminal'] = config['exec']['terminal']
+    proc['user']['uid'] = config.data['user']['uid']
+    proc['user']['gid'] = config.data['user']['gid']
+    proc['terminal'] = config.data['exec']['terminal']
 
-    if config['exec']['dir']:
-        proc['cwd'] = config['exec']['dir']
-    if config['exec']['cmd']:
+    if config.data['exec']['dir']:
+        proc['cwd'] = config.data['exec']['dir']
+    if config.data['exec']['cmd']:
         # Overwrite args, even if empty
         proc['args'] = [
-            config['exec']['cmd'],
-            *_split_args(config['exec']['args'])
+            config.data['exec']['cmd'],
+            *_split_args(config.data['exec']['args'])
         ]
-    elif config['exec']['args']:
+    elif config.data['exec']['args']:
         # Leave command alone, replace args
-        proc['args'][1:] = _split_args(config['exec']['args'])
+        proc['args'][1:] = _split_args(config.data['exec']['args'])
 
     # Capabilities, slightly special
-    if config['caps']['add'] or config['caps']['drop']:
+    if config.data['caps']['add'] or config.data['caps']['drop']:
         proc['capabilities'] = _update_capabilities(
-            proc['capabilities'], config['caps']
+            proc['capabilities'], config.data['caps']
         )
 
     # Update environment
-    proc['env'] = _update_environment(proc['env'], config['env'])
+    proc['env'] = _update_environment(proc['env'], config.data['env'])
 
     # Update mounts
     spec['mounts'] = _update_mounts(
-        spec['mounts'], config['volumes'], rundir
+        spec['mounts'], config.data['volumes'],
+        rundir.data if rundir else None
     )
 
     # Update rootless mapped uid/gid
@@ -160,11 +161,11 @@ def update_spec_file(config, rundir, ouid=None, ogid=None):
     linux = spec['linux']
     if ouid is not None:
         linux['uidMappings'] = _update_id_maps(
-            linux['uidMappings'], config['user']['uid'], ouid
+            linux['uidMappings'], config.data['user']['uid'], ouid
         )
     if ogid is not None:
         linux['gidMappings'] = _update_id_maps(
-            linux['gidMappings'], config['user']['gid'], ogid
+            linux['gidMappings'], config.data['user']['gid'], ogid
         )
 
     # Write updated file

@@ -19,7 +19,7 @@ def unpack_image(config, rootless=None, write_output=True):
         unpack_cmd.append('--rootless')
         config_cmd.append('--rootless')
 
-    image = config['image']
+    image = config.data['image']
     if image['type'] != 'oci':
         raise NotImplementedError(
             f'Unsupported image type: "{image["type"]}"'
@@ -28,7 +28,7 @@ def unpack_image(config, rootless=None, write_output=True):
     unpack_cmd.append(image_opt)
     config_cmd.append(image_opt)
 
-    storage = config['storage']
+    storage = config.data['storage']
     storage_path = Path(storage['base'])
     rootfs_path = storage_path / 'rootfs'
     config_path = storage_path / 'config.json'

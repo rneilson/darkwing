@@ -43,7 +43,7 @@ def ensure_files(files, uid=None, gid=None):
 
     return created
 
-def get_runtime_dir(uid=None):
+def get_runtime_path(uid=None):
     # Give priority to XDG_RUNTIME_DIR
     xdg_dir = os.environ.get('XDG_RUNTIME_DIR')
     if xdg_dir:

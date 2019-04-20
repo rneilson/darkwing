@@ -5,6 +5,16 @@ from pathlib import Path
 from darkwing.utils import probably_root, ensure_dirs
 from .defaults import default_base_paths, default_context
 
+
+class Context(object):
+
+    def __init__(self, name, path, data):
+        self.name = name
+        self.path = path
+        # TODO: expand
+        self.data = data
+
+
 def get_context_config(name='default', dirs=None, rootless=None, uid=None):
     if rootless is None:
         rootless = not probably_root()
@@ -17,9 +27,9 @@ def get_context_config(name='default', dirs=None, rootless=None, uid=None):
     for dirp in dirs:
         context_path = (Path(dirp) / name).with_suffix('.toml')
         if context_path.exists():
-            return toml.load(context_path), context_path
+            return Context(name, context_path, toml.load(context_path))
 
-    return None, None
+    return None
 
 def make_context_config(name='default', rootless=None, ouid=None,
                         ogid=None, configs_dir=None, storage_dir=None,
@@ -48,7 +58,7 @@ def make_context_config(name='default', rootless=None, ouid=None,
 
     # Start with default config
     # TODO: insert/compare other config elements
-    context = default_context(
+    context_data = default_context(
         name=name, rootless=rootless, ouid=ouid, ogid=ogid,
         configs_dir=configs_dir, storage_dir=storage_dir,
         base_domain=base_domain,
@@ -59,11 +69,11 @@ def make_context_config(name='default', rootless=None, ouid=None,
         dirs = [
             (configs_base, 0o775),
             (storage_base, 0o775),
-            (Path(context['configs']['base']), 0o775),
-            (Path(context['configs']['secrets']), 0o770),
-            (Path(context['storage']['images']), 0o775),
-            (Path(context['storage']['containers']), 0o770),
-            (Path(context['storage']['volumes']), 0o770),
+            (Path(context_data['configs']['base']), 0o775),
+            (Path(context_data['configs']['secrets']), 0o770),
+            (Path(context_data['storage']['images']), 0o775),
+            (Path(context_data['storage']['containers']), 0o770),
+            (Path(context_data['storage']['volumes']), 0o770),
         ]
         ensure_dirs(dirs, uid=cuid, gid=cgid)
 
@@ -72,6 +82,6 @@ def make_context_config(name='default', rootless=None, ouid=None,
         context_path.touch(mode=0o664, exist_ok=False)
         if do_chown:
             os.chown(context_path, cuid, cgid)
-        context_path.write_text(toml.dumps(context))
+        context_path.write_text(toml.dumps(context_data))
 
-    return context, context_path
+    return Context(name, context_path, context_data)

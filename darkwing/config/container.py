@@ -1,16 +1,78 @@
 import os
 import toml
 from pathlib import Path
+from collections import deque
 
 from darkwing.utils import (
-    probably_root, ensure_dirs, ensure_files, get_runtime_dir,
+    probably_root, ensure_dirs, ensure_files, get_runtime_path,
 )
 from .defaults import default_base_paths, default_container
 
-def get_container_config(name, context_name='default',
-                         dirs=None, rootless=None, uid=None):
+
+class Config(object):
+
+    def __init__(self, name, path, data):
+        self.name = name
+        self.path = path
+        # TODO: expand
+        self.data = data
+
+
+class Rundir(object):
+
+    def __init__(self, path, data):
+        self.path = path
+        # TODO: expand
+        self.data = data
+
+
+class Container(object):
+
+    def __init__(self, name, config, rundir=None, context=None):
+        # Manager state
+        self.name = name
+        self.path = Path(config.data['storage']['base'])
+        self.config = config
+        self.rundir = rundir
+        self.context = context
+        # Executor state
+        self.pid = None
+        self.stdin = None
+        self.stdout = None
+        self.stderr = None
+        self.returncode = None
+        self.status = 'new'
+        # Internal state
+        self._waiter = None
+        self._runtime = None
+        self._close_fds = deque()
+        self._io_threads = deque()
+
+    @property
+    def config_path(self):
+        return self.config.path
+
+    @property
+    def rundir_path(self):
+        return self.rundir.path if self.rundir else None
+    
+    @property
+    def context_name(self):
+        if isinstance(self.context, (str, bytes)):
+            return self.context
+        if context:
+            return self.context.name
+        return None
+
+
+def get_container_config(name, context, dirs=None, rootless=None, uid=None):
     if rootless is None:
         rootless = not probably_root()
+
+    if isinstance(context, (str, bytes)):
+        context_name = context
+    else:
+        context_name = context.name
 
     if dirs is None:
         cwd_base = Path.cwd() / '.darkwing'
@@ -20,9 +82,9 @@ def get_container_config(name, context_name='default',
     for dirp in dirs:
         config_path = (Path(dirp) / context_name / name).with_suffix('.toml')
         if config_path.exists():
-            return toml.load(config_path), config_path
+            return Config(name, config_path, toml.load(config_path))
 
-    return None, None
+    return None
 
 def make_container_config(name, context, image=None, tag='latest', uid=0,
                           gid=0, euid=None, egid=None, write_file=True):
@@ -40,7 +102,7 @@ def make_container_config(name, context, image=None, tag='latest', uid=0,
 
     # Start with default config
     # TODO: insert/compare other config elements
-    config = default_container(
+    config_data = default_container(
         name, context, image=image, tag=tag, uid=uid, gid=gid
     )
 
@@ -48,9 +110,9 @@ def make_container_config(name, context, image=None, tag='latest', uid=0,
         # Ensure all required config, storage dirs created
         dirs = [
             (config_base, 0o775),
-            (Path(config['storage']['base']), 0o770),
-            (Path(config['storage']['secrets']), 0o700),
-            (Path(config['volumes']['private']), 0o770),
+            (Path(config_data['storage']['base']), 0o770),
+            (Path(config_data['storage']['secrets']), 0o700),
+            (Path(config_data['volumes']['private']), 0o770),
         ]
         ensure_dirs(dirs, uid=cuid, gid=cgid)
 
@@ -59,16 +121,21 @@ def make_container_config(name, context, image=None, tag='latest', uid=0,
         config_path.touch(mode=0o664, exist_ok=False)
         if do_chown:
             os.chown(config_path, uid=cuid, gid=cgid)
-        config_path.write_text(toml.dumps(config))
+        config_path.write_text(toml.dumps(config_data))
 
-    return config, config_path
+    return Config(name, config_path, config_data)
 
-def make_runtime_dir(name, config, context_name='default',
-                     runtime_dir=None, uid=None, gid=None):
-    if runtime_dir is None:
-        rundir_base = get_runtime_dir(uid=uid)
+def make_runtime_dir(name, config, context, base_path=None,
+                     uid=None, gid=None):
+    if base_path is None:
+        rundir_base = get_runtime_path(uid=uid)
     else:
-        rundir_base = Path(rundir_base)
+        rundir_base = Path(base_path)
+
+    if isinstance(context, (str, bytes)):
+        context_name = context
+    else:
+        context_name = context.name
 
     rundir_path = rundir_base / context_name / name
     secrets_path = rundir_path / 'secrets'
@@ -90,7 +157,7 @@ def make_runtime_dir(name, config, context_name='default',
     mounts = [
         {
             'source': str(secrets_path),
-            'target': config['secrets']['target'],
+            'target': config.data['secrets']['target'],
             'type': 'bind',
             'readonly': True,
         },
@@ -124,10 +191,10 @@ def make_runtime_dir(name, config, context_name='default',
     with open('/etc/resolv.conf', 'r') as f:
         resolvconf.write_text(f.read())
     # Write container's hostname
-    hostname.write_text(config['dns']['hostname'])
+    hostname.write_text(config.data['dns']['hostname'])
     # TODO: write hosts?
 
-    rundir = {
+    rundir_data = {
         'base': str(rundir_path),
         'secrets': str(secrets_path),
         'volumes': str(volumes_path),
@@ -136,4 +203,4 @@ def make_runtime_dir(name, config, context_name='default',
         'mounts': mounts,
     }
 
-    return rundir, rundir_path
+    return Rundir(rundir_path, rundir_data)
