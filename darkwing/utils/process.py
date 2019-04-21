@@ -17,3 +17,13 @@ def simple_command(args, write_output=True, exit_on_failure=False, **kwargs):
         sys.exit(e.returncode)
 
     return p
+
+def compute_returncode(status):
+    if os.WIFSIGNALED(status):
+        returncode = -os.WTERMSIG(status)
+    elif os.WIFEXITED(status):
+        returncode = os.WEXITSTATUS(status)
+    elif os.WIFSTOPPED(status):
+        returncode = os.WSTOPSIG(status)
+
+    return returncode

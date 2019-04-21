@@ -5,7 +5,8 @@ from pathlib import Path
 from collections import deque
 
 from darkwing.utils import (
-    probably_root, ensure_dirs, ensure_files, get_runtime_path,
+    probably_root, ensure_dirs, ensure_files,
+    get_runtime_path, compute_returncode,
 )
 from darkwing.runtimes import spec
 from darkwing import storage
@@ -133,26 +134,31 @@ class Container(object):
 
         return self
 
-    def _wait(self):
+    def _wait(self, blocking=True):
         if self.returncode is not None:
             return self.returncode
 
-        pid, sts = os.waitpid(self.pid, 0)
+        try:
+            pid, sts = os.waitpid(self.pid, 0 if blocking else os.WNOHANG)
+        except ChildProcessError:
+            # Child already reaped somewhere else
+            self.returncode = 255
+        else:
+            if pid == 0:
+                # Child still alive
+                return None
 
-        if os.WIFSIGNALED(sts):
-            self.returncode = -os.WTERMSIG(sts)
-        elif os.WIFEXITED(sts):
-            self.returncode = os.WEXITSTATUS(sts)
-        elif os.WIFSTOPPED(sts):
-            self.returncode = os.WSTOPSIG(sts)
+            self.returncode = compute_returncode(sts)
 
         return self.returncode
 
     def _close(self):
         try:
+            self._closing = True
             returncode = self._wait()
             # TODO: self._waiter here?
             # TODO: catch any weird exceptions?
+            # TODO: attempt kill if child not yet dead
         finally:
             while True:
                 try:
@@ -174,11 +180,9 @@ class Container(object):
             # TODO: or self._waiter here instead?
             self._closing = False
 
-            return returncode
-
     def close(self):
         # Any preamble? Lock?
-        if self._closing is not None:
+        if self._closing is None:
             self._close()
 
         return self.returncode
