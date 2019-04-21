@@ -60,10 +60,10 @@ class Container(object):
         self.stderr = None
         self.returncode = None
         self.status = 'new'
-        self.closing = False
         # Internal state
         self._waiter = None
         self._runtime = None
+        self._closing = None
         self._close_fds = deque()
         self._io_threads = deque()
 
@@ -133,6 +133,55 @@ class Container(object):
 
         return self
 
+    def _wait(self):
+        if self.returncode is not None:
+            return self.returncode
+
+        pid, sts = os.waitpid(self.pid, 0)
+
+        if os.WIFSIGNALED(sts):
+            self.returncode = -os.WTERMSIG(sts)
+        elif os.WIFEXITED(sts):
+            self.returncode = os.WEXITSTATUS(sts)
+        elif os.WIFSTOPPED(sts):
+            self.returncode = os.WSTOPSIG(sts)
+
+        return self.returncode
+
+    def _close(self):
+        try:
+            returncode = self._wait()
+            # TODO: self._waiter here?
+            # TODO: catch any weird exceptions?
+        finally:
+            while True:
+                try:
+                    fd = self._close_fds.popleft()
+                    if isinstance(fd, int):
+                        os.close(fd)
+                    else:
+                        fd.close()
+                except IndexError:
+                    break
+
+            while True:
+                try:
+                    t = self._io_threads.popleft()
+                    t.join()
+                except IndexError:
+                    break
+
+            # TODO: or self._waiter here instead?
+            self._closing = False
+
+            return returncode
+
+    def close(self):
+        # Any preamble? Lock?
+        if self._closing is not None:
+            self._close()
+
+        return self.returncode
 
 def get_container_config(name, context, dirs=None, rootless=None, uid=None):
     if rootless is None:
