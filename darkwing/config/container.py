@@ -56,6 +56,7 @@ class Container(object):
         self.context = context
         # Executor state
         self.pid = None
+        self.tty = None
         self.stdin = None
         self.stdout = None
         self.stderr = None
@@ -65,8 +66,10 @@ class Container(object):
         self._waiter = None
         self._runtime = None
         self._closing = None
+        self._kill_sent = None
         self._close_fds = deque()
         self._io_threads = deque()
+        # TODO: waitpid lock?
 
     def __repr__(self):
         info = [self.__class__.__name__, f"name={self.name!r}"]
@@ -152,21 +155,30 @@ class Container(object):
 
         return self.returncode
 
+    def wait(self, blocking=True):
+        # For now, just a public wrapper
+        # TODO: return future?
+        return self._wait(blocking=blocking)
+
     def _close(self):
         try:
             self._closing = True
             returncode = self._wait()
+            # TODO: attempt kill if child not yet dead
             # TODO: self._waiter here?
             # TODO: catch any weird exceptions?
-            # TODO: attempt kill if child not yet dead
         finally:
             while True:
                 try:
                     fd = self._close_fds.popleft()
-                    if isinstance(fd, int):
-                        os.close(fd)
-                    else:
-                        fd.close()
+                    try:
+                        if isinstance(fd, int):
+                            os.close(fd)
+                        else:
+                            fd.close()
+                    except OSError as e:
+                        # TODO: log
+                        pass
                 except IndexError:
                     break
 
