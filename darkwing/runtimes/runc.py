@@ -15,9 +15,19 @@ from darkwing.utils import (
     output_isatty, resize_tty,
 )
 
+def _noop_sighandler():
+    pass
+
+
 class RuncExecutor(object):
 
-    FORWARD_SIGNALS = ['SIGABRT', 'SIGINT', 'SIGHUP', 'SIGTERM', 'SIGQUIT']
+    FORWARD_SIGNALS = (
+        signal.SIGABRT,
+        signal.SIGINT,
+        signal.SIGHUP,
+        signal.SIGTERM,
+        signal.SIGQUIT,
+    )
 
     def __init__(self, stdin=None, stdout=None, stderr=None):
         self.stdin = stdin
@@ -25,8 +35,8 @@ class RuncExecutor(object):
         self.stderr = stderr
         # Host process state
         self._signals = {}
-        self._signal_rfd = None
-        self._signal_wfd = None
+        self._sig_rsock = None
+        self._sig_wsock = None
         self._is_subreaper = False
         self._console_socket = None
         self._old_tty_settings = None
@@ -35,6 +45,7 @@ class RuncExecutor(object):
         self._other_pids = {}
         self._condition = threading.Condition()
         self._waiters = deque()
+        self._closing = False
 
     def _setup_stdio(self):
         if self.stdin is None:
@@ -116,21 +127,31 @@ class RuncExecutor(object):
 
     def _setup_signals(self):
         # Create signal socketpair
+        self._sig_rsock, self._sig_wsock = socket.socketpair()
 
         # Set signal fd
+        signal.set_wakeup_fd(self._sig_wsock.fileno())
 
         # Setup signal handlers
-
-        pass
+        sigs = self.FORWARD_SIGNALS + (signal.SIGWINCH, signal.SIGCHLD)
+        for sig in sigs:
+            # Store old handler for later
+            self._signals[sig] = signal.signal(sig, _noop_sighandler)
 
     def _restore_signals(self):
-        # Unset signal fd
-
         # Restore signal handlers
+        for sig in list(self._signals.keys()):
+            handler = self._signals.pop(sig)
+            # Restore old handler
+            signal.signal(sig, handler)
+
+        # Unset signal fd
+        signal.set_wakeup_fd(-1)
 
         # Close signal socketpair
-
-        pass
+        self._sig_rsock.close()
+        self._sig_wsock.close()
+        self._sig_rsock, self._sig_wsock = None, None
 
     def _set_subreaper(self, target=True):
         if self._is_subreaper != target:
@@ -138,36 +159,84 @@ class RuncExecutor(object):
 
         return self._is_subreaper
 
-    def _process_signals(self):
-        # Read from signal fd
-        # If SIGCHLD, reap
-        # If SIGWINCH, resize container tty
-        # If in FORWARD_SIGNALS, forward to container
-        # Otherwise ignore
-
-        # End once all containers exited
+    def _reap(self):
+        # Do waitpid() until no waitable children left
         pass
+
+    def _resize_tty(self):
+        # Send resize to any containers with ttys
+        pass
+
+    def _send_signal(self, sig):
+        # Send signal to all still-running containers
+        pass
+
+    def _process_signals(self):
+        complete = False
+
+        while not complete:
+            # Read from signal fd
+            try:
+                data = self._sig_rsock.recv(4096)
+            except InterruptedError:
+                continue
+
+            for sig in data:
+                if sig == signal.SIGCHLD:
+                    # Wait for all children exited since last
+                    self._reap()
+                elif sig == signal.SIGWINCH:
+                    # Resize container tty
+                    self._resize_tty()
+                elif sig in self.FORWARD_SIGNALS:
+                    # Forward to container
+                    self._send_signal(sig)
+                else:
+                    # Otherwise ignore
+                    continue
+
+            # End once all containers exited
+            with self._condition:
+                alive = [
+                    pid for pid, con in self._containers
+                    if con.returncode is None
+                ]
+                # TODO: anything to do with still-running containers?
+                if not alive:
+                    self._closing = True
+
+            if self._closing:
+                break
 
     # Main loop
 
     def run_until_complete(self, container):
         self._setup_stdio()
 
-        try:
-            # Internal setup
-            self._set_tty_raw()
-            self._setup_signals()
-            self._set_subreaper()
+        # Internal setup
+        self._set_tty_raw()
+        self._setup_signals()
+        self._set_subreaper()
 
+        try:
             # Assuming container unpacked and ready
             # TODO: allow running multiple containers
             self.create_container(container)
 
+            # TODO: setup container networking
+
+            # Anything else in particular before we start?
+            # TODO: multiple
             self.start_container(container)
 
             # Loop reading from signal fd, forwarding signals
             # and waitpid()'ing on SIGCHLD
             self._process_signals()
+
+            # Cleanup container remnants
+            # TODO: make optional
+            # TODO: multiple
+            self.remove_container(container)
 
         finally:
             # Internal teardown
@@ -190,13 +259,13 @@ class RuncExecutor(object):
     def stop_container(self, container):
         raise NotImplementedError
 
-    def run_container(self, container):
+    def remove_container(self, container):
         raise NotImplementedError
 
     # Other methods
 
-    def exec_in_container(self, container):
+    def run_container(self, container):
         raise NotImplementedError
 
-    def remove_container(self, container):
+    def exec_in_container(self, container):
         raise NotImplementedError
