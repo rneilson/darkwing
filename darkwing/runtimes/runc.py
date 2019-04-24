@@ -1,11 +1,14 @@
 import os
 import sys
-import json
-import socket
-import threading
-import subprocess
+import stat
+import io
 import tty
 import termios
+import socket
+import select
+import threading
+import subprocess
+import json
 from pathlib import Path
 from functools import partial
 from collections import deque
@@ -17,6 +20,116 @@ from darkwing.utils import (
 
 def _noop_sighandler():
     pass
+
+
+class IoPump(threading.Thread):
+
+    def __init__(self, read_from, write_to, tty_eof=False,
+                 select_timeout=None, waiter=None, name=None, daemon=False):
+        super().__init__(name=name, daemon=daemon)
+
+        self._read_from = read_from
+        self._read_fd = read_from.fileno()
+        self._write_to = write_to
+        self._write_fd = write_to.fileno()
+        self._timeout = select_timeout
+        self._waiter = waiter
+        self._buffer = bytearray()
+
+        # Couple more specific bits
+        self._tty_eof = tty_eof and os.isatty(self._write_fd)
+        # If write end is a pipe, we can do the reader trick
+        # to get notified of the other side's closing
+        # (Taken from asyncio)
+        mode = os.fstat(self._write_fd).st_mode
+        if stat.S_ISFIFO(mode) or stat.S_ISSOCK(mode):
+            self._is_pipe = True
+            self._buf_size = select.BUF_SIZE
+            # TODO: set non-blocking?
+        else:
+            self._is_pipe = False
+            self._buf_size = io.DEFAULT_BUFFER_SIZE / 2
+
+    def run(self):
+        # Any preamble?
+        try:
+            while True:
+                rlist, wlist = [], []
+                # Read if room in buffer
+                if self._read_from and len(self._buffer) < self._buf_size:
+                    rlist.append(self._read_fd)
+                # Write if data in buffer
+                if self._write_to and self._buffer:
+                    wlist.append(self._write_fd)
+
+                # This _shouldn't_ ever happen, but...
+                if not rlist and not wlist:
+                    raise RuntimeError("Can't read and can't write...")
+
+                # Watch for write-end closing
+                if self._is_pipe:
+                    rlist.append(self._write_fd)
+
+                # Wait for something available
+                rlist, wlist, _ = select.select(
+                    rlist, wlist, [], self._timeout
+                )
+
+                # Write end in readable list means pipe closed
+                if self._write_fd in wlist:
+                    raise BrokenPipeError
+
+                # Now we read
+                if self._read_from and self._read_fd in rlist:
+                    try:
+                        data = os.read(self._read_fd, self._buf_size)
+                    except (BlockingIOError, InterruptedError):
+                        pass
+                    else:
+                        if data:
+                            self._buffer.extend(data)
+                        else:
+                            # Closed
+                            try:
+                                self._read_from.close()
+                            except OSError as e:
+                                pass
+                            self._read_from = None
+                # And now we write
+                if self._write_to and self._write_fd in wlist:
+                    try:
+                        data = self._buffer[:self._buf_size]
+                        sent = os.write(self._write_fd, data)
+                    except (BlockingIOError, InterruptedError):
+                        pass
+                    else:
+                        del self._buffer[:sent]
+                # Are we cool yet
+                if not self._read_from and not self._buffer:
+                    break
+        except Exception as e:
+            exc = e
+        else:
+            exc = None
+
+        # We done
+        if self._read_from:
+            # TODO: set exception
+            try:
+                self._read_from.close()
+            except OSError as e:
+                pass
+        if self._write_to:
+            try:
+                if self._tty_eof:
+                    send_tty_eof(self._write_to)
+                else:
+                    self._write_to.close()
+            except OSError as e:
+                pass
+        if self._waiter:
+            # TODO: set result/exception
+            pass
 
 
 class RuncExecutor(object):
@@ -72,9 +185,9 @@ class RuncExecutor(object):
             self.stdout = self.stdout.detach()
         # (Re)open raw fd
         if isinstance(self.stdout, int):
-            # We *do* want to close stdout once complete, so that
-            # piped output properly propagates closure
-            self.stdout = open(self.stdout, 'wb', buffering=0)
+            # In theory, we should close stdout to propagate closure to
+            # pipes, but it might have complications if it's a tty
+            self.stdout = open(self.stdout, 'wb', buffering=0, closefd=False)
 
         if self.stderr is None:
             # Override any possible text/buffered stderr, reopen as binary
@@ -127,6 +240,7 @@ class RuncExecutor(object):
         if self._old_tty_settings is None:
             return True
 
+        # TODO: use TCSANOW?
         termios.tcsetattr(self.tty, termios.TCSAFLUSH, self._old_tty_settings)
         self._old_tty_settings = None
 
@@ -212,9 +326,7 @@ class RuncExecutor(object):
                     os.kill(pid, sig)
 
     def _process_signals(self):
-        complete = False
-
-        while not complete:
+        while True:
             # Read from signal fd
             try:
                 data = self._sig_rsock.recv(4096)
