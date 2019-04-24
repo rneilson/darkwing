@@ -167,8 +167,29 @@ class RuncExecutor(object):
         return self._is_subreaper
 
     def _reap(self):
-        # Do waitpid() until no waitable children left
-        pass
+        with self._condition:
+            # Do waitpid() until no waitable children left
+            while True:
+                try:
+                    pid, sts = os.waitpid(-1, os.WNOHANG)
+                except ChildProcessError:
+                    # No more children
+                    break
+                if pid == 0:
+                    # No more zombies
+                    break
+                if pid in self._containers:
+                    container = self._containers[pid]
+                    # Set return code here; container's wait() won't see it
+                    if container.returncode is None:
+                        container.returncode = compute_returncode(sts)
+                elif pid in self._other_pids:
+                    # TODO: possible callback?
+                    if self._other_pids[pid] is None:
+                        self._other_pids[pid] = compute_returncode(sts)
+                else:
+                    # TODO: log
+                    pass
 
     def _resize_tty(self):
         if self.tty is None:
@@ -185,7 +206,10 @@ class RuncExecutor(object):
 
     def _send_signal(self, sig=signal.SIGTERM):
         # Send signal to all still-running containers
-        pass
+        with self._condition:
+            for pid, container in self._containers.items():
+                if container.returncode is None:
+                    os.kill(pid, sig)
 
     def _process_signals(self):
         complete = False
