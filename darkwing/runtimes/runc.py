@@ -52,6 +52,8 @@ class IoPump(threading.Thread):
 
     def run(self):
         # Any preamble?
+        last_byte = None
+
         try:
             while True:
                 rlist, wlist = [], []
@@ -103,7 +105,9 @@ class IoPump(threading.Thread):
                     except (BlockingIOError, InterruptedError):
                         pass
                     else:
-                        del self._buffer[:sent]
+                        if sent:
+                            last_byte = self._buffer[sent - 1:sent]
+                            del self._buffer[:sent]
                 # Are we cool yet
                 if not self._read_from and not self._buffer:
                     break
@@ -122,7 +126,7 @@ class IoPump(threading.Thread):
         if self._write_to:
             try:
                 if self._tty_eof:
-                    send_tty_eof(self._write_to)
+                    send_tty_eof(self._write_to, last_sent=last_byte)
                 else:
                     self._write_to.close()
             except OSError as e:

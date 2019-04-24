@@ -31,16 +31,27 @@ def resize_tty(fd, columns, lines):
 
     return oldsize
 
-def send_tty_eof(fd):
+def send_tty_eof(fd, last_sent=None):
     if not isinstance(fd, int):
         fd = fd.fileno()
 
     try:
         # Get terminal's current EOF character
-        eof = termios.tcgetattr(fd)[6][termios.VEOF]
-        n = os.write(fd, eof)
+        cc = termios.tcgetattr(fd)[6]
+        eof = cc[termios.VEOF]
+        # If the last sent byte wasn't an EOL, the EOF will only
+        # end the current line, not actually function as close
+        if last_sent is not None:
+            # VEOL/VEOL2 as null bytes don't seem to matter...
+            eol = { b'\n', eof }
+            if last_sent[-1:] not in eol:
+                eof = eof * 2
+        try:
+            n = os.write(fd, eof)
+        except (BlockingIOError, InterruptedError):
+            n = None
 
-        return n is not None and n > 0
+        return n is not None and n > len(eof)
 
     # Will also catch BlockingIOError
     except OSError:
