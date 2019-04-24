@@ -30,3 +30,18 @@ def resize_tty(fd, columns, lines):
     fcntl.ioctl(fd, termios.TIOCSWINSZ, newsize)
 
     return oldsize
+
+def send_tty_eof(fd):
+    if not isinstance(fd, int):
+        fd = fd.fileno()
+
+    try:
+        # Get terminal's current EOF character
+        eof = termios.tcgetattr(fd)[6][termios.VEOF]
+        n = os.write(fd, eof)
+
+        return n is not None and n > 0
+
+    # Will also catch BlockingIOError
+    except OSError:
+        return False
