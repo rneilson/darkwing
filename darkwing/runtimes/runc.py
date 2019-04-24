@@ -12,7 +12,7 @@ from collections import deque
 
 from darkwing.utils import (
     compute_returncode, set_subreaper,
-    output_isatty, resize_tty,
+    output_isatty, resize_tty, send_tty_eof,
 )
 
 def _noop_sighandler():
@@ -30,9 +30,11 @@ class RuncExecutor(object):
     )
 
     def __init__(self, stdin=None, stdout=None, stderr=None):
+        # Stdio
         self.stdin = stdin
         self.stdout = stdout
         self.stderr = stderr
+        self.tty = None
         # Host process state
         self._signals = {}
         self._sig_rsock = None
@@ -87,40 +89,45 @@ class RuncExecutor(object):
             # fileobj, so we can write debug info if req'd
             self.stderr = open(self.stderr, 'wb', buffering=0, closefd=False)
 
+        # Check if we're in a tty
+        for fd in [self.stdin, self.stdout, self.stderr]:
+            if not fd:
+                continue
+            if os.isatty(fd.fileno()):
+                self.tty = fd.fileno()
+                break
+
     def _close_stdio(self):
         for fd in [self.stdin, self.stdout, self.stderr]:
-            if fd:
-                try:
-                    fd.close()
-                except OSError as e:
-                    # TODO: log
-                    continue
+            if not fd:
+                continue
+            try:
+                fd.close()
+            except OSError as e:
+                # TODO: log
+                continue
 
     # Setup/teardown
     def _set_tty_raw(self):
-        fd = self.stdin.fileno()
-
-        if not os.isatty(fd):
+        if self.tty is None:
             return False
 
         if self._old_tty_settings is not None:
             return True
 
-        self._old_tty_settings = termios.tcgetattr(fd)
-        tty.setraw(fd)
+        self._old_tty_settings = termios.tcgetattr(self.tty)
+        tty.setraw(self.tty, termios.TCSANOW)
 
         return True
 
     def _reset_tty(self):
-        fd = self.stdin.fileno()
-
-        if not os.isatty(fd):
+        if self.tty is None:
             return False
 
         if self._old_tty_settings is None:
             return True
 
-        termios.tcsetattr(fd, termios.TCSAFLUSH, self._old_tty_settings)
+        termios.tcsetattr(self.tty, termios.TCSAFLUSH, self._old_tty_settings)
         self._old_tty_settings = None
 
         return True
@@ -164,10 +171,19 @@ class RuncExecutor(object):
         pass
 
     def _resize_tty(self):
-        # Send resize to any containers with ttys
-        pass
+        if self.tty is None:
+            return
 
-    def _send_signal(self, sig):
+        # Get new terminal size
+        columns, lines = os.get_terminal_size(self.tty)
+
+        # Send resize to any containers with ttys
+        with self._condition:
+            for pid, container in self._containers.items():
+                if container.returncode is None and container.tty:
+                    resize_tty(container.tty, columns, lines)
+
+    def _send_signal(self, sig=signal.SIGTERM):
         # Send signal to all still-running containers
         pass
 
