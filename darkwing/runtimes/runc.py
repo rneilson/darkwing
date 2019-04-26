@@ -111,7 +111,7 @@ class IoPump(threading.Thread):
                 if self._write_to in wlist:
                     try:
                         data = self._buffer[:self._buf_size]
-                        sent = self._write_fd.write(data)
+                        sent = self._write_to.write(data)
                     except BlockingIOError as e:
                         sent = e.characters_written
                     except InterruptedError:
@@ -126,6 +126,9 @@ class IoPump(threading.Thread):
                     if sent:
                         last_byte = self._buffer[sent - 1:sent]
                         del self._buffer[:sent]
+                # Bit of housekeeping
+                data = None
+                sent = None
         except Exception as e:
             exc = e
         finally:
@@ -195,9 +198,7 @@ class RuncExecutor(object):
             self.stdin = self.stdin.detach()
         # (Re)open raw fd
         if isinstance(self.stdin, int):
-            # For now, don't actually close underlying fd when closing
-            # fileobj, so we can reset terminal settings if req'd
-            self.stdin = open(self.stdin, 'rb', buffering=0, closefd=False)
+            self.stdin = open(self.stdin, 'rb', buffering=0)
 
         if self.stdout is None:
             # Override any possible text/buffered stdout, reopen as binary
@@ -208,9 +209,7 @@ class RuncExecutor(object):
             self.stdout = self.stdout.detach()
         # (Re)open raw fd
         if isinstance(self.stdout, int):
-            # In theory, we should close stdout to propagate closure to
-            # pipes, but it might have complications if it's a tty
-            self.stdout = open(self.stdout, 'wb', buffering=0, closefd=False)
+            self.stdout = open(self.stdout, 'wb', buffering=0)
 
         if self.stderr is None:
             # Override any possible text/buffered stderr, reopen as binary
@@ -226,14 +225,20 @@ class RuncExecutor(object):
             self.stderr = open(self.stderr, 'wb', buffering=0, closefd=False)
 
         # Check if we're in a tty
-        for fd in [self.stdin, self.stdout, self.stderr]:
+        for fd in [self.stdout, self.stderr, self.stdin]:
             if not fd:
                 continue
-            if os.isatty(fd.fileno()):
-                self.tty = fd.fileno()
+            if fd.isatty():
+                # Grab a fresh copy of the tty for resizing/settings
+                self.tty = os.open(
+                    os.ttyname(fd.fileno()), os.O_NOCTTY | os.O_CLOEXEC)
                 break
 
     def _close_stdio(self):
+        # Close our extra tty fd
+        if self.tty is not None:
+            os.close(self.tty)
+
         for fd in [self.stdin, self.stdout, self.stderr]:
             if not fd:
                 continue
