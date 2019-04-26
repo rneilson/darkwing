@@ -24,45 +24,47 @@ def _noop_sighandler():
 
 class IoPump(threading.Thread):
 
-    def __init__(self, read_from, write_to, tty_eof=False,
+    def __init__(self, read_from, write_to, tty_eof=False, pipe_eof=True,
                  select_timeout=None, waiter=None, name=None, daemon=False):
         super().__init__(name=name, daemon=daemon)
 
         self._read_from = read_from
-        self._read_fd = read_from.fileno()
         self._write_to = write_to
-        self._write_fd = write_to.fileno()
         self._timeout = select_timeout
-        self._waiter = waiter
+        self._bufsize = io.DEFAULT_BUFFER_SIZE / 2
         self._buffer = bytearray()
+        self._waiter = waiter
 
         # Couple more specific bits
-        self._tty_eof = tty_eof and os.isatty(self._write_fd)
-        # If write end is a pipe, we can do the reader trick
-        # to get notified of the other side's closing
-        # (Taken from asyncio)
-        mode = os.fstat(self._write_fd).st_mode
-        if stat.S_ISFIFO(mode) or stat.S_ISSOCK(mode):
-            self._is_pipe = True
-            self._buf_size = select.BUF_SIZE
-            # TODO: set non-blocking?
-        else:
-            self._is_pipe = False
-            self._buf_size = io.DEFAULT_BUFFER_SIZE / 2
+        self._tty_eof = False
+        self._pipe_eof = False
+        if tty_eof:
+            self._tty_eof = self._write_to.isatty()
+        elif pipe_eof:
+            # If write end is a pipe, we can do the reader trick
+            # to get notified of the other side's closing
+            # (Taken from asyncio)
+            mode = os.fstat(self._write_to.fileno()).st_mode
+            if stat.S_ISFIFO(mode) or stat.S_ISSOCK(mode):
+                self._pipe_eof = True
+                self._bufsize = min(self._bufsize, select.BUF_SIZE)
+                # TODO: set non-blocking?
 
     def run(self):
-        # Any preamble?
+        # Any other preamble?
         last_byte = None
+        exc = None
 
         try:
-            while True:
+            # Are we cool yet
+            while self._read_from or self._buffer:
                 rlist, wlist = [], []
                 # Read if room in buffer
                 if self._read_from and len(self._buffer) < self._buf_size:
-                    rlist.append(self._read_fd)
+                    rlist.append(self._read_from)
                 # Write if data in buffer
-                if self._write_to and self._buffer:
-                    wlist.append(self._write_fd)
+                if self._buffer:
+                    wlist.append(self._write_to)
 
                 # This _shouldn't_ ever happen, but...
                 if not rlist and not wlist:
@@ -70,7 +72,7 @@ class IoPump(threading.Thread):
 
                 # Watch for write-end closing
                 if self._is_pipe:
-                    rlist.append(self._write_fd)
+                    rlist.append(self._write_to)
 
                 # Wait for something available
                 rlist, wlist, _ = select.select(
@@ -78,17 +80,25 @@ class IoPump(threading.Thread):
                 )
 
                 # Write end in readable list means pipe closed
-                if self._write_fd in wlist:
+                if self._write_to in rlist:
                     raise BrokenPipeError
 
                 # Now we read
-                if self._read_from and self._read_fd in rlist:
+                if self._read_from and self._read_from in rlist:
                     try:
-                        data = os.read(self._read_fd, self._buf_size)
+                        # Buffered fileobjs might have .read1(), so use that
+                        if hasattr(self._read_from, 'read1'):
+                            data = self._read_from.read1(self._buf_size)
+                        else:
+                            data = self._read_from.read(self._buf_size)
                     except (BlockingIOError, InterruptedError):
                         pass
                     else:
-                        if data:
+                        if data is None:
+                            # Lovely race condition between 'readable'
+                            # and actually reading...
+                            pass
+                        elif data:
                             self._buffer.extend(data)
                         else:
                             # Closed
@@ -98,42 +108,51 @@ class IoPump(threading.Thread):
                                 pass
                             self._read_from = None
                 # And now we write
-                if self._write_to and self._write_fd in wlist:
+                if self._write_to in wlist:
                     try:
                         data = self._buffer[:self._buf_size]
-                        sent = os.write(self._write_fd, data)
+                        sent = self._write_fd.write(data)
+                    except BlockingIOError as e:
+                        sent = e.characters_written
+                    except InterruptedError:
+                        sent = 0
+                    # In case write_to is buffered
+                    try:
+                        self._write_to.flush()
                     except (BlockingIOError, InterruptedError):
+                        # Don't care about internal buffer bytes written
                         pass
-                    else:
-                        if sent:
-                            last_byte = self._buffer[sent - 1:sent]
-                            del self._buffer[:sent]
-                # Are we cool yet
-                if not self._read_from and not self._buffer:
-                    break
+                    # Update buffer
+                    if sent:
+                        last_byte = self._buffer[sent - 1:sent]
+                        del self._buffer[:sent]
         except Exception as e:
             exc = e
-        else:
-            exc = None
+        finally:
+            # We done
+            self._buffer.clear()
 
-        # We done
-        if self._read_from:
-            # TODO: set exception
-            try:
-                self._read_from.close()
-            except OSError as e:
-                pass
-        if self._write_to:
-            try:
-                if self._tty_eof:
+            # TODO: set exception?
+            if self._read_from:
+                try:
+                    self._read_from.close()
+                except OSError as e:
+                    pass
+            if self._tty_eof:
+                try:
                     send_tty_eof(self._write_to, last_sent=last_byte)
-                else:
-                    self._write_to.close()
+                except OSError as e:
+                    pass
+            try:
+                self._write_to.close()
             except OSError as e:
                 pass
-        if self._waiter:
+            self._read_from = None
+            self._write_to = None
+
             # TODO: set result/exception
-            pass
+            if self._waiter:
+                pass
 
 
 class RuncExecutor(object):
