@@ -14,6 +14,7 @@ from functools import partial
 from collections import deque
 
 from darkwing.utils import (
+    get_runtime_path, ensure_dirs,
     compute_returncode, set_subreaper,
     output_isatty, resize_tty, send_tty_eof,
 )
@@ -173,7 +174,8 @@ class RuncExecutor(object):
         signal.SIGQUIT,
     )
 
-    def __init__(self, stdin=None, stdout=None, stderr=None):
+    def __init__(self, context_name='default', state_dir=None,
+                 stdin=None, stdout=None, stderr=None, uid=None, gid=None):
         # Stdio
         self.stdin = stdin
         self.stdout = stdout
@@ -181,6 +183,8 @@ class RuncExecutor(object):
         self.tty = None
         self.tty_raw = None
         # Host process state
+        self.uid = uid
+        self.gid = gid
         self._signals = {}
         self._sig_rsock = None
         self._sig_wsock = None
@@ -191,8 +195,18 @@ class RuncExecutor(object):
         self._containers = {}
         self._other_pids = {}
         self._condition = threading.Condition()
-        self._waiters = deque()
-        self._closing = False
+        self._closing = None
+        # Runc state dir
+        if state_dir is None:
+            self._state_dir = get_runtime_path(uid) / context_name / '.runc'
+        else:
+            self._state_dir = Path(state_dir) / context_name / '.runc'
+
+    def _ensure_state_dir(self):
+        return bool(ensure_dirs(
+            [(self._state_dir, 0o770)],
+            uid=self.uid, gid=self.gid,
+        ))
 
     def _setup_stdio(self):
         if self.stdin is None:
@@ -399,14 +413,16 @@ class RuncExecutor(object):
     # Main loop
 
     def run_until_complete(self, container):
-        self._setup_stdio()
-
-        # Internal setup
-        self._set_tty_raw()
-        self._setup_signals()
-        self._set_subreaper()
+        # Runc setup
+        self._ensure_state_dir()
 
         try:
+            # Internal setup
+            self._setup_stdio()
+            self._set_tty_raw()
+            self._setup_signals()
+            self._set_subreaper(True)
+
             # Assuming container unpacked and ready
             # TODO: allow running multiple containers
             self.create_container(container)
@@ -434,10 +450,8 @@ class RuncExecutor(object):
             self._set_subreaper(False)
             self._restore_signals()
             self._reset_tty()
-
-        # Notify waiters
-
-        self._close_stdio()
+            self._close_stdio()
+            # TODO: Notify waiters
 
     # Container lifecycle methods
 
