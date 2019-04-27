@@ -258,7 +258,7 @@ class RuncExecutor(object):
 
     # Setup/teardown
     def _set_tty_raw(self):
-        if self.tty is None:
+        if self.tty is None or not self.tty_raw:
             return False
 
         if self._old_tty_settings is not None:
