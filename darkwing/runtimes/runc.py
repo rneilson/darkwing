@@ -349,11 +349,19 @@ class RuncExecutor(object):
                     if container.returncode is None:
                         container.returncode = compute_returncode(sts)
                 elif pid in self._other_pids:
-                    # TODO: possible callback?
-                    if self._other_pids[pid] is None:
-                        self._other_pids[pid] = compute_returncode(sts)
+                    other_proc = self._other_pids[pid]
+                    returncode = compute_returncode(sts)
+                    if other_proc is None:
+                        self._other_pids[pid] = returncode
+                    elif isinstance(other_proc, subprocess.Popen):
+                        # Have to manually update subproc state
+                        with other_proc._waitpid_lock:
+                            if other_proc.returncode is None:
+                                other_proc.returncode = returncode
+                    elif callable(other_proc):
+                        other_proc(returncode)
                 else:
-                    # TODO: log
+                    # TODO: log martians
                     pass
 
     def _resize_tty(self):
