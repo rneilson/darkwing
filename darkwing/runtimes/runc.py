@@ -169,6 +169,7 @@ class RuncExecutor(object):
         self.stdout = stdout
         self.stderr = stderr
         self.tty = None
+        self.tty_raw = None
         # Host process state
         self._signals = {}
         self._sig_rsock = None
@@ -220,13 +221,15 @@ class RuncExecutor(object):
             self.stderr = open(self.stderr, 'wb', buffering=0, closefd=False)
 
         # Check if we're in a tty
-        for fd in [self.stdout, self.stderr, self.stdin]:
+        for fd in [self.stdin, self.stdout, self.stderr]:
             if not fd:
                 continue
             if fd.isatty():
                 # Grab a fresh copy of the tty for resizing/settings
                 self.tty = os.open(
                     os.ttyname(fd.fileno()), os.O_NOCTTY | os.O_CLOEXEC)
+                # If stdin is a tty, we'll also need to set input raw
+                self.tty_raw = (fd is self.stdin)
                 break
 
     def _close_stdio(self):
@@ -257,7 +260,7 @@ class RuncExecutor(object):
         return True
 
     def _reset_tty(self):
-        if self.tty is None:
+        if self.tty is None or not self.tty_raw:
             return False
 
         if self._old_tty_settings is None:
@@ -338,7 +341,7 @@ class RuncExecutor(object):
         # Send resize to any containers with ttys
         with self._condition:
             for pid, container in self._containers.items():
-                if container.returncode is None and container.tty:
+                if container.returncode is None and container.tty is not None:
                     resize_tty(container.tty, columns, lines)
 
     def _send_signal(self, sig=signal.SIGTERM):
@@ -399,6 +402,9 @@ class RuncExecutor(object):
             self.create_container(container)
 
             # TODO: setup container networking
+            
+            # Initial tty resize
+            self._resize_tty()
 
             # Anything else in particular before we start?
             # TODO: multiple
