@@ -21,141 +21,136 @@ from darkwing.utils import (
 def _noop_sighandler():
     pass
 
+def iopump(read_from, write_to, tty_eof=False, pipe_eof=True,
+           select_timeout=None, future=None):
+    # Allow giving raw fds
+    if isinstance(read_from, int):
+        read_from = open(read_from, 'rb', buffering=0)
+    if isinstance(write_to, int):
+        write_to = open(write_to, 'wb', buffering=0)
 
-class IoPump(threading.Thread):
+    # Anything else to init?
+    buf = bytearray()
+    bufsize = io.DEFAULT_BUFFER_SIZE / 2
+    last_byte = None
+    exc = None
 
-    def __init__(self, read_from, write_to, tty_eof=False, pipe_eof=True,
-                 select_timeout=None, waiter=None, name=None, daemon=False):
-        super().__init__(name=name, daemon=daemon)
+    # Specialty EOF handling
+    if tty_eof:
+        tty_eof = write_to.isatty()
+        pipe_eof = False
+    elif pipe_eof:
+        # If write end is a pipe, we can do the reader trick
+        # to get notified of the other side's closing
+        # (Taken from asyncio)
+        mode = os.fstat(write_to.fileno()).st_mode
+        pipe_eof = stat.S_ISFIFO(mode) or stat.S_ISSOCK(mode)
+        if pipe_eof:
+            # Ensure we use at most the max pipe writeable size
+            # TODO: set write_to non-blocking?
+            bufsize = min(bufsize, select.BUF_SIZE)
 
-        self._read_from = read_from
-        self._write_to = write_to
-        self._timeout = select_timeout
-        self._bufsize = io.DEFAULT_BUFFER_SIZE / 2
-        self._buffer = bytearray()
-        self._waiter = waiter
+    try:
+        # Are we cool yet
+        while read_from or buf:
+            rlist, wlist = [], []
+            # Read if room in buffer
+            if read_from and len(buf) < buf_size:
+                rlist.append(read_from)
+            # Write if data in buffer
+            if buf:
+                wlist.append(write_to)
 
-        # Couple more specific bits
-        self._tty_eof = False
-        self._pipe_eof = False
-        if tty_eof:
-            self._tty_eof = self._write_to.isatty()
-        elif pipe_eof:
-            # If write end is a pipe, we can do the reader trick
-            # to get notified of the other side's closing
-            # (Taken from asyncio)
-            mode = os.fstat(self._write_to.fileno()).st_mode
-            if stat.S_ISFIFO(mode) or stat.S_ISSOCK(mode):
-                self._pipe_eof = True
-                self._bufsize = min(self._bufsize, select.BUF_SIZE)
-                # TODO: set non-blocking?
+            # This _shouldn't_ ever happen, but...
+            if not rlist and not wlist:
+                raise RuntimeError("Can't read and can't write...")
 
-    def run(self):
-        # Any other preamble?
-        last_byte = None
-        exc = None
+            # Watch for write-end closing
+            if pipe_eof:
+                rlist.append(write_to)
 
-        try:
-            # Are we cool yet
-            while self._read_from or self._buffer:
-                rlist, wlist = [], []
-                # Read if room in buffer
-                if self._read_from and len(self._buffer) < self._buf_size:
-                    rlist.append(self._read_from)
-                # Write if data in buffer
-                if self._buffer:
-                    wlist.append(self._write_to)
+            # Wait for something available
+            rlist, wlist, _ = select.select(
+                rlist, wlist, [], select_timeout
+            )
 
-                # This _shouldn't_ ever happen, but...
-                if not rlist and not wlist:
-                    raise RuntimeError("Can't read and can't write...")
+            # Write end in readable list means pipe closed
+            if write_to in rlist:
+                raise BrokenPipeError
 
-                # Watch for write-end closing
-                if self._is_pipe:
-                    rlist.append(self._write_to)
-
-                # Wait for something available
-                rlist, wlist, _ = select.select(
-                    rlist, wlist, [], self._timeout
-                )
-
-                # Write end in readable list means pipe closed
-                if self._write_to in rlist:
-                    raise BrokenPipeError
-
-                # Now we read
-                if self._read_from and self._read_from in rlist:
-                    try:
-                        # Buffered fileobjs might have .read1(), so use that
-                        if hasattr(self._read_from, 'read1'):
-                            data = self._read_from.read1(self._buf_size)
-                        else:
-                            data = self._read_from.read(self._buf_size)
-                    except (BlockingIOError, InterruptedError):
-                        pass
+            # Now we read
+            if read_from and read_from in rlist:
+                try:
+                    # Buffered fileobjs might have .read1(), so use that
+                    if hasattr(read_from, 'read1'):
+                        data = read_from.read1(buf_size)
                     else:
-                        if data is None:
-                            # Lovely race condition between 'readable'
-                            # and actually reading...
-                            pass
-                        elif data:
-                            self._buffer.extend(data)
-                        else:
-                            # Closed
-                            try:
-                                self._read_from.close()
-                            except OSError as e:
-                                pass
-                            self._read_from = None
-                # And now we write
-                if self._write_to in wlist:
-                    try:
-                        data = self._buffer[:self._buf_size]
-                        sent = self._write_to.write(data)
-                    except BlockingIOError as e:
-                        sent = e.characters_written
-                    except InterruptedError:
-                        sent = 0
-                    # In case write_to is buffered
-                    try:
-                        self._write_to.flush()
-                    except (BlockingIOError, InterruptedError):
-                        # Don't care about internal buffer bytes written
+                        data = read_from.read(buf_size)
+                except (BlockingIOError, InterruptedError):
+                    pass
+                else:
+                    if data is None:
+                        # Lovely race condition between 'readable'
+                        # and actually reading...
                         pass
-                    # Update buffer
-                    if sent:
-                        last_byte = self._buffer[sent - 1:sent]
-                        del self._buffer[:sent]
-                # Bit of housekeeping
-                data = None
-                sent = None
-        except Exception as e:
-            exc = e
-        finally:
-            # We done
-            self._buffer.clear()
+                    elif data:
+                        buf.extend(data)
+                    else:
+                        # Closed
+                        try:
+                            read_from.close()
+                        except OSError as e:
+                            pass
+                        read_from = None
+            # And now we write
+            if write_to in wlist:
+                try:
+                    data = buf[:buf_size]
+                    sent = write_to.write(data)
+                except BlockingIOError as e:
+                    sent = e.characters_written
+                except InterruptedError:
+                    sent = 0
+                # In case write_to is buffered
+                try:
+                    write_to.flush()
+                except (BlockingIOError, InterruptedError):
+                    # Don't care about internal buffer bytes written
+                    pass
+                # Update buffer
+                if sent:
+                    last_byte = buf[sent - 1:sent]
+                    del buf[:sent]
+            # Bit of housekeeping
+            data = None
+            sent = None
+    except Exception as e:
+        exc = e
+    finally:
+        # We done
+        buf.clear()
 
-            # TODO: set exception?
-            if self._read_from:
-                try:
-                    self._read_from.close()
-                except OSError as e:
-                    pass
-            if self._tty_eof:
-                try:
-                    send_tty_eof(self._write_to, last_sent=last_byte)
-                except OSError as e:
-                    pass
+        # TODO: set exception?
+        if read_from:
             try:
-                self._write_to.close()
+                read_from.close()
             except OSError as e:
                 pass
-            self._read_from = None
-            self._write_to = None
-
-            # TODO: set result/exception
-            if self._waiter:
+        if tty_eof:
+            try:
+                send_tty_eof(write_to, last_sent=last_byte)
+            except OSError as e:
                 pass
+        try:
+            write_to.close()
+        except OSError as e:
+            pass
+        read_from = None
+        write_to = None
+
+        # TODO: set result/exception
+        if future:
+            pass
 
 
 class RuncExecutor(object):
