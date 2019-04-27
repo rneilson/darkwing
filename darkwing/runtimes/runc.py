@@ -195,6 +195,7 @@ class RuncExecutor(object):
         self._containers = {}
         self._other_pids = {}
         self._condition = threading.Condition()
+        self._running = None
         self._closing = None
         # Runc state dir
         if state_dir is None:
@@ -376,43 +377,46 @@ class RuncExecutor(object):
                     os.kill(pid, sig)
 
     def _process_signals(self):
-        while True:
-            # Read from signal fd
-            try:
-                data = self._sig_rsock.recv(4096)
-            except InterruptedError:
-                continue
-
-            for sig in data:
-                if sig == signal.SIGCHLD:
-                    # Wait for all children exited since last
-                    self._reap()
-                elif sig == signal.SIGWINCH:
-                    # Resize container tty
-                    self._resize_tty()
-                elif sig in self.FORWARD_SIGNALS:
-                    # Forward to container
-                    self._send_signal(sig)
-                else:
-                    # Otherwise ignore
+        with self._condition:
+            self._running = True
+        try:
+            while True:
+                # Read from signal fd
+                try:
+                    data = self._sig_rsock.recv(4096)
+                except InterruptedError:
                     continue
-
-            # End once all containers exited
+                # Handle signals
+                for sig in data:
+                    if sig == signal.SIGCHLD:
+                        # Wait for all children exited since last
+                        self._reap()
+                    elif sig == signal.SIGWINCH:
+                        # Resize container tty
+                        self._resize_tty()
+                    elif sig in self.FORWARD_SIGNALS:
+                        # Forward to container
+                        self._send_signal(sig)
+                    else:
+                        # Otherwise ignore
+                        continue
+                # End once all containers exited
+                with self._condition:
+                    alive = [
+                        pid for pid, con in self._containers
+                        if con.returncode is None
+                    ]
+                    # TODO: anything to do with still-running containers?
+                    if not alive:
+                        break
+        finally:
             with self._condition:
-                alive = [
-                    pid for pid, con in self._containers
-                    if con.returncode is None
-                ]
-                # TODO: anything to do with still-running containers?
-                if not alive:
-                    self._closing = True
-
-            if self._closing:
-                break
+                self._running = False
+                self._closing = True
 
     # Main loop
 
-    def run_until_complete(self, container):
+    def run_until_complete(self, container, remove=True):
         # Runc setup
         self._ensure_state_dir()
 
@@ -440,18 +444,21 @@ class RuncExecutor(object):
             # and waitpid()'ing on SIGCHLD
             self._process_signals()
 
+            # TODO: teardown container networking
+
             # Cleanup container remnants
-            # TODO: make optional
             # TODO: multiple
-            self.remove_container(container)
+            if remove:
+                self.remove_container(container)
 
         finally:
             # Internal teardown
+            # TODO: terminate & wait for other processes
+            # TODO: notify waiters (or after closing?)
             self._set_subreaper(False)
             self._restore_signals()
             self._reset_tty()
             self._close_stdio()
-            # TODO: Notify waiters
 
     # Container lifecycle methods
 
