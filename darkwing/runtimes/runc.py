@@ -51,6 +51,10 @@ def iopump(read_from, write_to, tty_eof=False, pipe_eof=True,
             bufsize = min(bufsize, select.BUF_SIZE)
 
     try:
+        # Set future running, or bail if cancelled
+        if future:
+            if not future.set_running_or_notify_cancel():
+                return
         # Are we cool yet
         while read_from or buf:
             rlist, wlist = [], []
@@ -148,9 +152,15 @@ def iopump(read_from, write_to, tty_eof=False, pipe_eof=True,
         read_from = None
         write_to = None
 
-        # TODO: set result/exception
-        if future:
-            pass
+        if future and not future.cancelled():
+            if exc:
+                future.set_exception(exc)
+            else:
+                future.set_result(True)
+            # I've seen similar in the threading executor code,
+            # so let's avoid any potential refcycle problems
+            del exc
+            del future
 
 
 class RuncExecutor(object):
