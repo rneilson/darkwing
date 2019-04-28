@@ -206,7 +206,8 @@ class RuncExecutor(object):
     )
 
     def __init__(self, context_name='default', state_dir=None,
-                 stdin=None, stdout=None, stderr=None, uid=None, gid=None):
+                 stdin=None, stdout=None, stderr=None,
+                 close_stdio=False, uid=None, gid=None):
         # Stdio
         self.stdin = stdin
         self.stdout = stdout
@@ -240,7 +241,7 @@ class RuncExecutor(object):
             uid=self.uid, gid=self.gid,
         ))
 
-    def _setup_stdio(self):
+    def _setup_stdio(self, close_stdin=False, close_stdout=False):
         if self.stdin is None:
             # Override any possible text/buffered stdin, reopen as binary
             self.stdin = sys.stdin.fileno()
@@ -250,7 +251,9 @@ class RuncExecutor(object):
             self.stdin = self.stdin.detach()
         # (Re)open raw fd
         if isinstance(self.stdin, int):
-            self.stdin = open(self.stdin, 'rb', buffering=0)
+            self.stdin = open(
+                self.stdin, 'rb', buffering=0, closefd=close_stdin
+            )
 
         if self.stdout is None:
             # Override any possible text/buffered stdout, reopen as binary
@@ -261,7 +264,9 @@ class RuncExecutor(object):
             self.stdout = self.stdout.detach()
         # (Re)open raw fd
         if isinstance(self.stdout, int):
-            self.stdout = open(self.stdout, 'wb', buffering=0)
+            self.stdout = open(
+                self.stdout, 'wb', buffering=0, closefd=close_stdout
+            )
 
         if self.stderr is None:
             # Override any possible text/buffered stderr, reopen as binary
@@ -295,6 +300,7 @@ class RuncExecutor(object):
         # Close our extra tty fd
         if self.tty is not None:
             os.close(self.tty)
+            self.tty = None
 
         for fd in [self.stdin, self.stdout, self.stderr]:
             if not fd:
@@ -490,20 +496,36 @@ class RuncExecutor(object):
 
     # Main loop
 
-    def run_until_complete(self, container, remove=True):
+    def run_until_complete(self, container, remove=True, debug=False):
+        with self._condition:
+            if self._closing:
+                raise RuntimeError('Cannot run when closing')
+
         # Runc setup
         self._ensure_state_dir()
 
         try:
             # Internal setup
             self._setup_stdio()
+            if debug:
+                print('Stdio setup complete\r', file=sys.stderr, flush=True)
             self._set_tty_raw()
+            if debug:
+                print('TTY setup complete\r', file=sys.stderr, flush=True)
             self._setup_signals()
+            if debug:
+                print('Signal setup complete\r', file=sys.stderr, flush=True)
             self._set_subreaper(True)
+            if debug:
+                print('Subreaper set\r', file=sys.stderr, flush=True)
 
             # Assuming container unpacked and ready
             # TODO: allow running multiple containers
-            self.create_container(container)
+            created = self.create_container(container)
+            if not created:
+                return created
+            if debug:
+                print('Container created\r', file=sys.stderr, flush=True)
 
             # TODO: setup container networking
             
@@ -513,10 +535,14 @@ class RuncExecutor(object):
             # Anything else in particular before we start?
             # TODO: multiple
             self.start_container(container)
+            if debug:
+                print('Container started\r', file=sys.stderr, flush=True)
 
             # Loop reading from signal fd, forwarding signals
             # and waitpid()'ing on SIGCHLD
             self._process_signals()
+            if debug:
+                print('Container finished\r', file=sys.stderr, flush=True)
 
             # TODO: teardown container networking
 
@@ -524,9 +550,14 @@ class RuncExecutor(object):
             # TODO: multiple
             if remove:
                 self.remove_container(container)
-
-            return self._get_returncode()
-
+                if debug:
+                    print('Container removed\r', file=sys.stderr, flush=True)
+        except Exception as e:
+            if debug:
+                print(
+                    traceback.format_exc().replace('\n', '\r\n'),
+                    file=sys.stderr, flush=True,
+                )
         finally:
             # Internal teardown
             self._close()
@@ -534,6 +565,8 @@ class RuncExecutor(object):
             self._restore_signals()
             self._reset_tty()
             self._close_stdio()
+
+        return self._get_returncode()
 
     # Container lifecycle methods
 
@@ -604,7 +637,7 @@ class RuncExecutor(object):
 
         return container
 
-    def _create_container_notty(container, runc_cmd):
+    def _create_container_notty(self, container, runc_cmd):
         runc_cmd += [container.name]
 
         # Create pipes
@@ -628,7 +661,7 @@ class RuncExecutor(object):
             raise RuntimeError(
                 'Error creating container {0}:\n{1!r}'
                 .format(container.name, e)
-            )
+            ) from None
         finally:
             for fileobj in [stdin_c, stdout_c, stderr_c]:
                 fileobj.close()
@@ -636,6 +669,34 @@ class RuncExecutor(object):
         container.stdin = open(stdin_p.detach(), 'wb', buffering=0)
         container.stdout = open(stdout_p.detach(), 'rb', buffering=0)
         container.stderr = open(stderr_p.detach(), 'rb', buffering=0)
+
+        return container
+
+    def _setup_container_stdio(self, container):
+        # Event to help stop i/o threads
+        stop_ev = threading.Event()
+        container._stop_event = stop_ev
+        # Setup each i/o thread
+        if container.stdin:
+            container._io_threads.append(threading.Thread(
+                name=f"{container.name}-stdin", daemon=False,
+                target=iopump, args=(self.stdin, container.stdin),
+                kwargs={'tty_eof': container.use_tty, 'stop_event': stop_ev},
+            ))
+        if container.stdout:
+            container._io_threads.append(threading.Thread(
+                name=f"{container.name}-stdout", daemon=False,
+                target=iopump, args=(container.stdout, self.stdout),
+                kwargs={'tty_eof': False, 'stop_event': stop_ev},
+            ))
+        if container.stderr:
+            container._io_threads.append(threading.Thread(
+                name=f"{container.name}-stderr", daemon=False,
+                target=iopump, args=(container.stderr, self.stderr),
+                kwargs={'tty_eof': False, 'stop_event': stop_ev},
+            ))
+        for t in container._io_threads:
+            t.start()
 
         return container
 
@@ -662,10 +723,12 @@ class RuncExecutor(object):
     def create_container(self, container):
         with self._condition:
             if self._closing:
-                return False
+                raise RuntimeError('Cannot create container when closing')
 
         if not container.rundir:
             container.make_rundir()
+
+        container.status = 'creating'
 
         runc_cmd = self._base_runc_cmd('create')
         # TODO: other options? Specify '--rootless'?
@@ -681,6 +744,12 @@ class RuncExecutor(object):
 
         # Now get state
         self._get_container_state(container)
+
+        # Start up i/o thread(s)
+        self._setup_container_stdio(container)
+
+        if container.pid:
+            self._containers[container.pid] = container
 
         return container
 
