@@ -272,9 +272,12 @@ class RuncExecutor(object):
             self.stderr = self.stderr.detach()
         # (Re)open raw fd
         if isinstance(self.stderr, int):
-            # For now, don't actually close underlying fd when closing
-            # fileobj, so we can write debug info if req'd
-            self.stderr = open(self.stderr, 'wb', buffering=0, closefd=False)
+            # If this proc's stderr, don't actually close underlying fd
+            # when closing fileobj, so we can write debug info if req'd
+            self.stderr = open(
+                self.stderr, 'wb', buffering=0,
+                closefd=(self.stderr == sys.stderr.fileno())
+            )
 
         # Check if we're in a tty
         for fd in [self.stdin, self.stdout, self.stderr]:
