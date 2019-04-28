@@ -9,6 +9,7 @@ import select
 import signal
 import threading
 import subprocess
+import array
 import json
 import errno
 import traceback
@@ -17,9 +18,8 @@ from functools import partial
 from collections import deque
 
 from darkwing.utils import (
-    get_runtime_path, ensure_dirs,
-    compute_returncode, set_subreaper,
-    output_isatty, resize_tty, send_tty_eof,
+    get_runtime_path, ensure_dirs, simple_command, compute_returncode,
+    set_subreaper, output_isatty, resize_tty, send_tty_eof,
 )
 
 def _noop_sighandler(signum, frame):
@@ -464,6 +464,18 @@ class RuncExecutor(object):
             with self._condition:
                 self._running = False
 
+    def _get_returncode(self):
+        # Return first nonzero return code, or 0
+        with self._condition:
+            for pid, con in self._containers:
+                if con.returncode:
+                    return con.returncode
+            # If any containers and no errors, return 0
+            if self._containers:
+                return 0
+        # No containers to speak of
+        return None
+
     def _close(self):
         with self._condition:
             self._closing = True
@@ -472,7 +484,9 @@ class RuncExecutor(object):
             # TODO: send sigkill if still running?
             con.close()
         # TODO: terminate & wait for other processes
-        # TODO: notify waiters (or after closing?)
+        # Notify waiters
+        with self._condition:
+            self._condition.notify_all()
 
     # Main loop
 
@@ -511,6 +525,8 @@ class RuncExecutor(object):
             if remove:
                 self.remove_container(container)
 
+            return self._get_returncode()
+
         finally:
             # Internal teardown
             self._close()
@@ -521,17 +537,189 @@ class RuncExecutor(object):
 
     # Container lifecycle methods
 
+    def _base_runc_cmd(self, command):
+        return ['runc', command, '--root', str(self._state_dir)]
+
+    def _create_container_tty(self, container, runc_cmd):
+        tty_socket_path = container.rundir_path / 'tty.sock'
+        runc_cmd += [
+            '--console-socket',
+            str(tty_socket_path),
+            container.name,
+        ]
+
+        # Init socket
+        tty_socket = socket.socket(socket.AF_UNIX)
+        try:
+            tty_socket_path.unlink()
+        except FileNotFoundError:
+            pass
+        tty_socket.bind(tty_socket_path)
+        tty_socket.listen()
+
+        # Run create command
+        try:
+            proc = subprocess.Popen(
+                runc_cmd, cwd=container.path, stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            try:
+                # Wait about 10ms, see if it failed right away
+                returncode = proc.wait(0.010)
+            except subprocess.TimeoutExpired:
+                # Good to go
+                pass
+            else:
+                errmsg = proc.stderr.read().decode(errors='surrogateescape')
+                raise RuntimeError(
+                    'Error creating container {}:\n{}'
+                    .format(container.name, errmsg)
+                )
+            # Get new tty through socket
+            sock, _ = socket.accept()
+            fds = array.array('i')
+            msg, ancdata, flags, _ = sock.recvmsg(
+                4096, socket.CMSG_LEN(fds.itemsize)
+            )
+            for cmsg_level, cmsg_type, cmsg_data in ancdata:
+                if (cmsg_level == socket.SOL_SOCKET and
+                        cmsg_type == socket.SCM_RIGHTS):
+                    # Only expecting a single fd
+                    fds.fromstring(cmsg_data[:fds.itemsize])
+            sock.close()
+            proc.wait()
+        finally:
+            tty_socket.close()
+
+        if not fds:
+            raise RuntimeError(f"Couldn't get tty for {container.name}")
+
+        # Set up container stdio with new socket
+        tty = fds[0]
+        container.tty = tty
+        container._close_fds.append(tty)
+        container.stdin = open(tty, 'wb', buffering=0, closefd=False)
+        container.stdout = open(tty, 'rb', buffering=0, closefd=False)
+        container.stderr = open(tty, 'rb', buffering=0, closefd=False)
+
+        return container
+
+    def _create_container_notty(container, runc_cmd):
+        runc_cmd += [container.name]
+
+        # Create pipes
+        stdin_p, stdin_c = socket.socketpair()
+        stdout_p, stdout_c = socket.socketpair()
+        stderr_p, stderr_c = socket.socketpair()
+
+        try:
+            proc = subprocess.Popen(
+                runc_cmd, stdin=stdin_c, stdout=stdout_c, stderr=stderr_c,
+            )
+            proc.wait()
+            if proc.returncode:
+                # TODO: get error message
+                raise RuntimeError(
+                    f"Command 'runc create' returned {proc.returncode}"
+                )
+        except Exception as e:
+            for fileobj in [stdin_p, stdout_p, stderr_p]:
+                fileobj.close()
+            raise RuntimeError(
+                'Error creating container {0}:\n{1!r}'
+                .format(container.name, e)
+            )
+        finally:
+            for fileobj in [stdin_c, stdout_c, stderr_c]:
+                fileobj.close()
+
+        container.stdin = open(stdin_p.detach(), 'wb', buffering=0)
+        container.stdout = open(stdout_p.detach(), 'rb', buffering=0)
+        container.stderr = open(stderr_p.detach(), 'rb', buffering=0)
+
+        return container
+
+    def _get_container_state(self, container, raise_on_failure=True):
+        runc_cmd = self._base_runc_cmd('state') + [container.name]
+        proc = simple_command(runc_cmd, write_output=False)
+        proc_out = proc.stdout.encode(errors='surrogateescape')
+        if proc.returncode:
+            if raise_on_failure:
+                # TODO: figure out how to kill container w/o pid
+                raise RuntimeError(
+                    f"Error getting state of container "
+                    f"{container.name}:\n{proc_out}"
+                )
+            return None
+
+        # Parse state
+        state = json.loads(proc_out)
+        container.pid = state['pid']
+        container.status = state['status']
+
+        return container
+
     def create_container(self, container):
-        raise NotImplementedError
+        with self._condition:
+            if self._closing:
+                return False
+
+        if not container.rundir:
+            container.make_rundir()
+
+        runc_cmd = self._base_runc_cmd('create')
+        # TODO: other options? Specify '--rootless'?
+        runc_cmd.extend([
+            '--bundle', str(container.path),
+            '--pid-file', str(container.rundir_path / 'pid'),
+        ])
+
+        if container.use_tty:
+            self._create_container_tty(container, runc_cmd)
+        else:
+            self._create_container_notty(container, runc_cmd)
+
+        # Now get state
+        self._get_container_state(container)
+
+        return container
 
     def start_container(self, container):
-        raise NotImplementedError
+        if not container.pid or container.status != 'created':
+            raise RuntimeError(f"Cannot start {container.status} container")
+        
+        runc_cmd = self._base_runc_cmd('start') + [container.name]
+        proc = simple_command(runc_cmd, write_output=False)
+        proc_out = proc.stdout.encode(errors='surrogateescape')
+        if proc.returncode:
+            # TODO: Kill container?
+            raise RuntimeError(
+                f"Error starting container {container.name}:\n{proc_out}"
+            )
+
+        # Now get state
+        self._get_container_state(container)
+
+        return container
 
     def stop_container(self, container):
         raise NotImplementedError
 
     def remove_container(self, container):
-        raise NotImplementedError
+        state = self._get_container_state(container, raise_on_failure=False)
+        if not state:
+            return False
+
+        runc_cmd = self._base_runc_cmd('start') + [container.name]
+        proc = simple_command(runc_cmd, write_output=False)
+        proc_out = proc.stdout.encode(errors='surrogateescape')
+        if proc.returncode:
+            raise RuntimeError(
+                f"Error removing container {container.name}:\n{proc_out}"
+            )
+
+        container.status = 'removed'
+        return container
 
     # Other methods
 

@@ -86,6 +86,10 @@ class Container(object):
         return '<{}>'.format(' '.join(info))
 
     @property
+    def use_tty(self):
+        return self.config.data['exec'].get('terminal', False)
+
+    @property
     def config_path(self):
         return self.config.path
 
