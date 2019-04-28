@@ -6,9 +6,12 @@ import tty
 import termios
 import socket
 import select
+import signal
 import threading
 import subprocess
 import json
+import errno
+import traceback
 from pathlib import Path
 from functools import partial
 from collections import deque
@@ -19,11 +22,11 @@ from darkwing.utils import (
     output_isatty, resize_tty, send_tty_eof,
 )
 
-def _noop_sighandler():
+def _noop_sighandler(signum, frame):
     pass
 
-def iopump(read_from, write_to, tty_eof=False, pipe_eof=True,
-           select_timeout=None, future=None):
+def iopump(read_from, write_to, stop_event=None, tty_eof=False,
+           pipe_eof=True, select_timeout=0.1, future=None, print_exc=False):
     # Allow giving raw fds
     if isinstance(read_from, int):
         read_from = open(read_from, 'rb', buffering=0)
@@ -32,7 +35,7 @@ def iopump(read_from, write_to, tty_eof=False, pipe_eof=True,
 
     # Anything else to init?
     buf = bytearray()
-    bufsize = io.DEFAULT_BUFFER_SIZE / 2
+    bufsize = io.DEFAULT_BUFFER_SIZE // 2
     last_byte = None
     exc = None
 
@@ -59,16 +62,24 @@ def iopump(read_from, write_to, tty_eof=False, pipe_eof=True,
         # Are we cool yet
         while read_from or buf:
             rlist, wlist = [], []
-            # Read if room in buffer
-            if read_from and len(buf) < buf_size:
-                rlist.append(read_from)
+            if read_from:
+                # Check for closed read end
+                if read_from.closed:
+                    try:
+                        read_from.close()
+                    except OSError as e:
+                        pass
+                    read_from = None
+                # Read if room in buffer
+                elif len(buf) < bufsize:
+                    rlist.append(read_from)
             # Write if data in buffer
             if buf:
                 wlist.append(write_to)
 
-            # This _shouldn't_ ever happen, but...
+            # Everything's dead, Dave...
             if not rlist and not wlist:
-                raise RuntimeError("Can't read and can't write...")
+                break
 
             # Watch for write-end closing
             if pipe_eof:
@@ -84,33 +95,47 @@ def iopump(read_from, write_to, tty_eof=False, pipe_eof=True,
                 raise BrokenPipeError
 
             # Now we read
-            if read_from and read_from in rlist:
-                try:
-                    # Buffered fileobjs might have .read1(), so use that
-                    if hasattr(read_from, 'read1'):
-                        data = read_from.read1(buf_size)
-                    else:
-                        data = read_from.read(buf_size)
-                except (BlockingIOError, InterruptedError):
-                    pass
+            if read_from:
+                if read_from in rlist:
+                    try:
+                        # Buffered fileobjs might have .read1(), so use that
+                        if hasattr(read_from, 'read1'):
+                            data = read_from.read1(bufsize)
+                        else:
+                            data = read_from.read(bufsize)
+                    except (BlockingIOError, InterruptedError):
+                        data = None
+                    except OSError as e:
+                        if e.errno == errno.EIO:
+                            # Stream closed
+                            data = b''
+                        else:
+                            raise
+                elif write_to.closed:
+                    # Write end already closed, stop now
+                    data = b''
+                elif stop_event and stop_event.is_set():
+                    # External stop event, assume closed
+                    data = b''
                 else:
-                    if data is None:
-                        # Lovely race condition between 'readable'
-                        # and actually reading...
+                    data = None
+
+                if data is None:
+                    pass
+                elif data:
+                    buf.extend(data)
+                else:
+                    # Closed
+                    try:
+                        read_from.close()
+                    except OSError as e:
                         pass
-                    elif data:
-                        buf.extend(data)
-                    else:
-                        # Closed
-                        try:
-                            read_from.close()
-                        except OSError as e:
-                            pass
-                        read_from = None
+                    read_from = None
+
             # And now we write
             if write_to in wlist:
                 try:
-                    data = buf[:buf_size]
+                    data = buf[:bufsize]
                     sent = write_to.write(data)
                 except BlockingIOError as e:
                     sent = e.characters_written
@@ -124,13 +149,18 @@ def iopump(read_from, write_to, tty_eof=False, pipe_eof=True,
                     pass
                 # Update buffer
                 if sent:
-                    last_byte = buf[sent - 1:sent]
+                    last_byte = bytes(buf[sent - 1:sent])
                     del buf[:sent]
+
             # Bit of housekeeping
             data = None
             sent = None
     except Exception as e:
         exc = e
+        if print_exc:
+            msg = f'I/O exception, from={read_from!r}, to={write_to!r}\r\n'
+            msg += traceback.format_exc().replace('\n', '\r\n')
+            print(msg, file=sys.stderr)
     finally:
         # We done
         buf.clear()
@@ -166,6 +196,7 @@ def iopump(read_from, write_to, tty_eof=False, pipe_eof=True,
 
 class RuncExecutor(object):
 
+    # TODO: add (configurable) signal to force-kill containers
     FORWARD_SIGNALS = (
         signal.SIGABRT,
         signal.SIGINT,
@@ -212,7 +243,7 @@ class RuncExecutor(object):
     def _setup_stdio(self):
         if self.stdin is None:
             # Override any possible text/buffered stdin, reopen as binary
-            self.stdin = self.stdin.fileno()
+            self.stdin = sys.stdin.fileno()
         elif (not hasattr(self.stdin, 'read') and
                 hasattr(self.stdin, 'detach')):
             # Socket object, so remake into normal(ish) fileobj
@@ -300,11 +331,16 @@ class RuncExecutor(object):
     def _setup_signals(self):
         # Create signal socketpair
         self._sig_rsock, self._sig_wsock = socket.socketpair()
+        # Write end of self-pipe must be non-blocking
+        self._sig_wsock.setblocking(False)
+        # TODO: for now we want read end blocking, but maybe
+        # we'll change that later
 
         # Set signal fd
         signal.set_wakeup_fd(self._sig_wsock.fileno())
 
         # Setup signal handlers
+        # TODO: include signal to force-kill containers
         sigs = self.FORWARD_SIGNALS + (signal.SIGWINCH, signal.SIGCHLD)
         for sig in sigs:
             # Store old handler for later
@@ -321,8 +357,10 @@ class RuncExecutor(object):
         signal.set_wakeup_fd(-1)
 
         # Close signal socketpair
-        self._sig_rsock.close()
-        self._sig_wsock.close()
+        if self._sig_rsock is not None:
+            self._sig_rsock.close()
+        if self._sig_wsock is not None:
+            self._sig_wsock.close()
         self._sig_rsock, self._sig_wsock = None, None
 
     def _set_subreaper(self, target=True):
@@ -385,9 +423,9 @@ class RuncExecutor(object):
                     os.kill(pid, sig)
 
     def _process_signals(self):
-        with self._condition:
-            self._running = True
         try:
+            with self._condition:
+                self._running = True
             while True:
                 # Read from signal fd
                 try:
@@ -403,15 +441,17 @@ class RuncExecutor(object):
                         # Resize container tty
                         self._resize_tty()
                     elif sig in self.FORWARD_SIGNALS:
-                        # Forward to container
+                        # Forward to container(s)
                         self._send_signal(sig)
                     else:
+                        # TODO: some signal to break and/or force-kill
+                        # all still-running (possibly hung) containers?
                         # Otherwise ignore
                         continue
                 # End once all containers exited
                 with self._condition:
                     alive = [
-                        pid for pid, con in self._containers
+                        pid for pid, con in self._containers.items()
                         if con.returncode is None
                     ]
                     # TODO: anything to do with still-running containers?
@@ -420,7 +460,16 @@ class RuncExecutor(object):
         finally:
             with self._condition:
                 self._running = False
-                self._closing = True
+
+    def _close(self):
+        with self._condition:
+            self._closing = True
+        # Close all containers
+        for pid, con in self._containers.items():
+            # TODO: send sigkill if still running?
+            con.close()
+        # TODO: terminate & wait for other processes
+        # TODO: notify waiters (or after closing?)
 
     # Main loop
 
@@ -461,8 +510,7 @@ class RuncExecutor(object):
 
         finally:
             # Internal teardown
-            # TODO: terminate & wait for other processes
-            # TODO: notify waiters (or after closing?)
+            self._close()
             self._set_subreaper(False)
             self._restore_signals()
             self._reset_tty()

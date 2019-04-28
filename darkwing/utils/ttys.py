@@ -33,7 +33,10 @@ def resize_tty(fd, columns, lines):
 
 def send_tty_eof(fd, last_sent=None):
     if not isinstance(fd, int):
-        fd = fd.fileno()
+        try:
+            fd = fd.fileno()
+        except ValueError:
+            return False
 
     try:
         # Get terminal's current EOF character

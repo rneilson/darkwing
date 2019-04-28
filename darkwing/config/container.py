@@ -69,6 +69,7 @@ class Container(object):
         self._kill_sent = None
         self._close_fds = deque()
         self._io_threads = deque()
+        self._stop_event = None
         # TODO: waitpid lock?
 
     def __repr__(self):
@@ -138,7 +139,7 @@ class Container(object):
         return self
 
     def _wait(self, blocking=True):
-        if self.returncode is not None:
+        if self.returncode is not None or self.pid is None:
             return self.returncode
 
         try:
@@ -163,11 +164,21 @@ class Container(object):
     def _close(self):
         try:
             self._closing = True
-            returncode = self._wait()
+            returncode = self.wait()
             # TODO: attempt kill if child not yet dead
             # TODO: self._waiter here?
             # TODO: catch any weird exceptions?
         finally:
+            if self._stop_event:
+                self._stop_event.set()
+
+            while True:
+                try:
+                    t = self._io_threads.popleft()
+                    t.join()
+                except IndexError:
+                    break
+
             while True:
                 try:
                     fd = self._close_fds.popleft()
@@ -179,13 +190,6 @@ class Container(object):
                     except OSError as e:
                         # TODO: log
                         pass
-                except IndexError:
-                    break
-
-            while True:
-                try:
-                    t = self._io_threads.popleft()
-                    t.join()
                 except IndexError:
                     break
 
