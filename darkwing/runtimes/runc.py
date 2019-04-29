@@ -52,7 +52,7 @@ def iopump(read_from, write_to, stop_event=None, tty_eof=False,
         if pipe_eof:
             # Ensure we use at most the max pipe writeable size
             # TODO: set write_to non-blocking?
-            bufsize = min(bufsize, select.BUF_SIZE)
+            bufsize = min(bufsize, select.PIPE_BUF)
 
     try:
         # Set future running, or bail if cancelled
@@ -190,8 +190,18 @@ def iopump(read_from, write_to, stop_event=None, tty_eof=False,
                 future.set_result(True)
             # I've seen similar in the threading executor code,
             # so let's avoid any potential refcycle problems
-            del exc
-            del future
+            exc = None
+            future = None
+
+
+class RuncError(Exception):
+
+    def __init__(self, name, message):
+        super().__init__(f"runc error for container {name}")
+        self.name = name
+        self.message = message
+
+    # TODO: __repr__()
 
 
 class RuncExecutor(object):
@@ -206,14 +216,17 @@ class RuncExecutor(object):
     )
 
     def __init__(self, context_name='default', state_dir=None,
-                 stdin=None, stdout=None, stderr=None,
-                 close_stdio=False, uid=None, gid=None):
+                 stdin=None, stdout=None, stderr=None, close_stdio=False,
+                 uid=None, gid=None, debug=False, log_file=sys.stderr):
         # Stdio
         self.stdin = stdin
         self.stdout = stdout
         self.stderr = stderr
         self.tty = None
         self.tty_raw = None
+        self.debug = bool(debug)
+        self._log_file = log_file
+        self._log_isatty = log_file and log_file.isatty()
         # Host process state
         self.uid = uid
         self.gid = gid
@@ -234,6 +247,17 @@ class RuncExecutor(object):
             self._state_dir = get_runtime_path(uid) / context_name / '.runc'
         else:
             self._state_dir = Path(state_dir) / context_name / '.runc'
+
+    def _write_log(self, message, flush=True):
+        if self._log_file:
+            if self._log_isatty:
+                # Bit of a correction for tty newline weirdness
+                message = '\r\n'.join(message.splitlines()) + '\r'
+            print(message, file=self._log_file, flush=flush)
+
+    def _debug_log(self, message, flush=True):
+        if self.debug:
+            self._write_log(message, flush=flush)
 
     def _ensure_state_dir(self):
         return bool(ensure_dirs(
@@ -496,7 +520,7 @@ class RuncExecutor(object):
 
     # Main loop
 
-    def run_until_complete(self, container, remove=True, debug=False):
+    def run_until_complete(self, container, remove=True):
         with self._condition:
             if self._closing:
                 raise RuntimeError('Cannot run when closing')
@@ -507,25 +531,17 @@ class RuncExecutor(object):
         try:
             # Internal setup
             self._setup_stdio()
-            if debug:
-                print('Stdio setup complete\r', file=sys.stderr, flush=True)
             self._set_tty_raw()
-            if debug:
-                print('TTY setup complete\r', file=sys.stderr, flush=True)
             self._setup_signals()
-            if debug:
-                print('Signal setup complete\r', file=sys.stderr, flush=True)
             self._set_subreaper(True)
-            if debug:
-                print('Subreaper set\r', file=sys.stderr, flush=True)
+            self._debug_log('Internal setup complete')
 
             # Assuming container unpacked and ready
             # TODO: allow running multiple containers
             created = self.create_container(container)
             if not created:
                 return created
-            if debug:
-                print('Container created\r', file=sys.stderr, flush=True)
+            self._debug_log('Container created')
 
             # TODO: setup container networking
             
@@ -535,14 +551,12 @@ class RuncExecutor(object):
             # Anything else in particular before we start?
             # TODO: multiple
             self.start_container(container)
-            if debug:
-                print('Container started\r', file=sys.stderr, flush=True)
+            self._debug_log('Container started')
 
             # Loop reading from signal fd, forwarding signals
             # and waitpid()'ing on SIGCHLD
             self._process_signals()
-            if debug:
-                print('Container finished\r', file=sys.stderr, flush=True)
+            self._debug_log('Container finished')
 
             # TODO: teardown container networking
 
@@ -550,14 +564,11 @@ class RuncExecutor(object):
             # TODO: multiple
             if remove:
                 self.remove_container(container)
-                if debug:
-                    print('Container removed\r', file=sys.stderr, flush=True)
+                self._debug_log('Container removed')
+        except RuncError as e:
+            self._write_log(f"{e!r}\n{e.message}")
         except Exception as e:
-            if debug:
-                print(
-                    traceback.format_exc().replace('\n', '\r\n'),
-                    file=sys.stderr, flush=True,
-                )
+            self._write_log(traceback.format_exc())
         finally:
             # Internal teardown
             self._close()
@@ -565,13 +576,14 @@ class RuncExecutor(object):
             self._restore_signals()
             self._reset_tty()
             self._close_stdio()
+            self._debug_log('Internal teardown complete')
 
         return self._get_returncode()
 
     # Container lifecycle methods
 
     def _base_runc_cmd(self, command):
-        return ['runc', command, '--root', str(self._state_dir)]
+        return ['runc', '--root', str(self._state_dir), command]
 
     def _create_container_tty(self, container, runc_cmd):
         tty_socket_path = container.rundir_path / 'tty.sock'
@@ -604,10 +616,7 @@ class RuncExecutor(object):
                 pass
             else:
                 errmsg = proc.stderr.read().decode(errors='surrogateescape')
-                raise RuntimeError(
-                    'Error creating container {}:\n{}'
-                    .format(container.name, errmsg)
-                )
+                raise RuncError(container.name, errmsg)
             # Get new tty through socket
             sock, _ = socket.accept()
             fds = array.array('i')
@@ -625,7 +634,7 @@ class RuncExecutor(object):
             tty_socket.close()
 
         if not fds:
-            raise RuntimeError(f"Couldn't get tty for {container.name}")
+            raise RuncError(container.name, "Couldn't get tty")
 
         # Set up container stdio with new socket
         tty = fds[0]
@@ -651,17 +660,34 @@ class RuncExecutor(object):
             )
             proc.wait()
             if proc.returncode:
-                # TODO: get error message
-                raise RuntimeError(
-                    f"Command 'runc create' returned {proc.returncode}"
-                )
+                try:
+                    # Get error message
+                    msg = bytearray()
+                    stdout_p.setblocking(False)
+                    stderr_p.setblocking(False)
+                    for fd in (stdout_p, stderr_p):
+                        try:
+                            while True:
+                                data = stderr_p.recv(4096)
+                                if data:
+                                    msg.extend(data)
+                                else:
+                                    break
+                        except BlockingIOError:
+                            continue
+                        else:
+                            break
+                    errmsg = msg.decode(errors='surrogateescape')
+                except:
+                    errmsg = f"Command 'runc create' returned {proc.returncode}"
+                raise RuncError(container.name, errmsg)
         except Exception as e:
             for fileobj in [stdin_p, stdout_p, stderr_p]:
                 fileobj.close()
-            raise RuntimeError(
-                'Error creating container {0}:\n{1!r}'
-                .format(container.name, e)
-            ) from None
+            if isinstance(e, RuncError):
+                raise
+            errmsg = f'Error creating container: {e!r}'
+            raise RuncError(container.name, errmsg) from None
         finally:
             for fileobj in [stdin_c, stdout_c, stderr_c]:
                 fileobj.close()
@@ -707,10 +733,8 @@ class RuncExecutor(object):
         if proc.returncode:
             if raise_on_failure:
                 # TODO: figure out how to kill container w/o pid
-                raise RuntimeError(
-                    f"Error getting state of container "
-                    f"{container.name}:\n{proc_out}"
-                )
+                errmsg = proc_out or f'Error getting container state'
+                raise RuncError(container.name, errmsg)
             return None
 
         # Parse state
@@ -762,9 +786,8 @@ class RuncExecutor(object):
         proc_out = proc.stdout.encode(errors='surrogateescape')
         if proc.returncode:
             # TODO: Kill container?
-            raise RuntimeError(
-                f"Error starting container {container.name}:\n{proc_out}"
-            )
+            errmsg = proc_out or f'Error starting container'
+            raise RuncError(container.name, errmsg)
 
         # Now get state
         self._get_container_state(container)
@@ -783,9 +806,8 @@ class RuncExecutor(object):
         proc = simple_command(runc_cmd, write_output=False)
         proc_out = proc.stdout.encode(errors='surrogateescape')
         if proc.returncode:
-            raise RuntimeError(
-                f"Error removing container {container.name}:\n{proc_out}"
-            )
+            errmsg = proc_out or f'Error removing container'
+            raise RuncError(container.name, errmsg)
 
         container.status = 'removed'
         return container
