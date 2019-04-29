@@ -21,6 +21,7 @@ from darkwing.utils import (
     get_runtime_path, ensure_dirs, simple_command, compute_returncode,
     set_subreaper, output_isatty, resize_tty, send_tty_eof,
 )
+from . import spec
 
 def _noop_sighandler(signum, frame):
     pass
@@ -599,7 +600,7 @@ class RuncExecutor(object):
             tty_socket_path.unlink()
         except FileNotFoundError:
             pass
-        tty_socket.bind(tty_socket_path)
+        tty_socket.bind(str(tty_socket_path))
         tty_socket.listen()
 
         # Run create command
@@ -617,8 +618,9 @@ class RuncExecutor(object):
             else:
                 errmsg = proc.stderr.read().decode(errors='surrogateescape')
                 raise RuncError(container.name, errmsg)
+
             # Get new tty through socket
-            sock, _ = socket.accept()
+            sock, _ = tty_socket.accept()
             fds = array.array('i')
             msg, ancdata, flags, _ = sock.recvmsg(
                 4096, socket.CMSG_LEN(fds.itemsize)
@@ -627,14 +629,24 @@ class RuncExecutor(object):
                 if (cmsg_level == socket.SOL_SOCKET and
                         cmsg_type == socket.SCM_RIGHTS):
                     # Only expecting a single fd
-                    fds.fromstring(cmsg_data[:fds.itemsize])
+                    fd_len = len(cmsg_data) - (len(cmsg_data) % fds.itemsize)
+                    fds.fromstring(cmsg_data[:fd_len])
             sock.close()
-            proc.wait()
+
+            # Now handle start process
+            returncode = proc.wait()
+            if returncode:
+                errmsg = proc.stderr.read().decode(errors='surrogateescape')
+                raise RuncError(container.name, errmsg)
         finally:
             tty_socket.close()
 
-        if not fds:
-            raise RuncError(container.name, "Couldn't get tty")
+        if len(fds) == 0:
+            if msg:
+                errmsg = msg.decode(errors='surrogateescape')
+            else:
+                errmsg = "Couldn't get tty"
+            raise RuncError(container.name, errmsg)
 
         # Set up container stdio with new socket
         tty = fds[0]
@@ -754,6 +766,10 @@ class RuncExecutor(object):
 
         container.status = 'creating'
 
+        # Update OCI spec file
+        spec.update_spec_file(container.config, container.rundir)
+
+        # Create container runc-side
         runc_cmd = self._base_runc_cmd('create')
         # TODO: other options? Specify '--rootless'?
         runc_cmd.extend([
