@@ -1,0 +1,20 @@
+#!/usr/bin/env python3
+
+import os
+import sys
+
+from darkwing.config import context, container
+from darkwing.runtimes.runc import RuncExecutor
+
+if __name__ == '__main__':
+    args = sys.argv[1:]
+    if not args:
+        sys.exit('No container specified')
+
+    name, _, context_name = args[0].partition(':')
+    ctx = context.get_context_config(context_name or 'default')
+    con = container.load_container(name, ctx, make_rundir=True)
+
+    # runc = RuncExecutor(debug=True)
+    runc = RuncExecutor(debug=False)
+    runc.run_until_complete(con, remove=True)
