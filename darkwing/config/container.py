@@ -89,6 +89,10 @@ class Container(object):
     def use_tty(self):
         return self.config.data['exec'].get('terminal', False)
 
+    @use_tty.setter
+    def use_tty(self, value):
+        self.config.data['exec']['terminal'] = value
+
     @property
     def config_path(self):
         return self.config.path

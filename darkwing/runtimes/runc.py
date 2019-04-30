@@ -230,7 +230,7 @@ class RuncExecutor(object):
         self.stdin = stdin
         self.stdout = stdout
         self.stderr = stderr
-        self.tty = None
+        self.tty_fd = None
         self.tty_raw = None
         self.debug = bool(debug)
         self._log_file = log_file
@@ -273,10 +273,11 @@ class RuncExecutor(object):
             uid=self.uid, gid=self.gid,
         ))
 
-    def _setup_stdio(self, close_stdin=False, close_stdout=False):
+    def _setup_stdio(self, close_stdin=True, close_stdout=True):
         if self.stdin is None:
             # Override any possible text/buffered stdin, reopen as binary
             self.stdin = sys.stdin.fileno()
+            close_stdin = close_stdin and not sys.stdin.isatty()
         elif (not hasattr(self.stdin, 'read') and
                 hasattr(self.stdin, 'detach')):
             # Socket object, so remake into normal(ish) fileobj
@@ -290,6 +291,7 @@ class RuncExecutor(object):
         if self.stdout is None:
             # Override any possible text/buffered stdout, reopen as binary
             self.stdout = sys.stdout.fileno()
+            close_stdout = close_stdout and not sys.stdout.isatty()
         elif (not hasattr(self.stdout, 'write') and
                 hasattr(self.stdout, 'detach')):
             # Socket object, so remake into normal(ish) fileobj
@@ -322,7 +324,7 @@ class RuncExecutor(object):
                 continue
             if fd.isatty():
                 # Grab a fresh copy of the tty for resizing/settings
-                self.tty = os.open(
+                self.tty_fd = os.open(
                     os.ttyname(fd.fileno()), os.O_NOCTTY | os.O_CLOEXEC)
                 # # If stdin is a tty, we'll also need to set input raw
                 # self.tty_raw = (fd is self.stdin)
@@ -330,9 +332,9 @@ class RuncExecutor(object):
 
     def _close_stdio(self):
         # Close our extra tty fd
-        if self.tty is not None:
-            os.close(self.tty)
-            self.tty = None
+        if self.tty_fd is not None:
+            os.close(self.tty_fd)
+            self.tty_fd = None
 
         for fd in [self.stdin, self.stdout, self.stderr]:
             if not fd:
@@ -345,29 +347,33 @@ class RuncExecutor(object):
 
     # Setup/teardown
     def _set_tty_raw(self, container=None):
+        # Only use tty mode if both host and container using ttys
+        # TODO: move elsewhere?
         if container and container.use_tty:
-            self.tty_raw = True
+            self.tty_raw = (self.stdin.isatty() and self.stdout.isatty())
+            container.use_tty = self.tty_raw
 
-        if self.tty is None or not self.tty_raw:
+        if self.tty_fd is None or not self.tty_raw:
             return False
 
         if self._old_tty_settings is not None:
             return True
 
-        self._old_tty_settings = termios.tcgetattr(self.tty)
-        tty.setraw(self.tty, termios.TCSANOW)
+        self._old_tty_settings = termios.tcgetattr(self.tty_fd)
+        tty.setraw(self.tty_fd, termios.TCSANOW)
+        self._debug_log('Set TTY to raw mode')
 
         return True
 
     def _reset_tty(self):
-        if self.tty is None or not self.tty_raw:
+        if self.tty_fd is None or not self.tty_raw:
             return False
 
         if self._old_tty_settings is None:
             return True
 
         # TODO: use TCSANOW?
-        termios.tcsetattr(self.tty, termios.TCSAFLUSH, self._old_tty_settings)
+        termios.tcsetattr(self.tty_fd, termios.TCSAFLUSH, self._old_tty_settings)
         self._old_tty_settings = None
 
         return True
@@ -448,11 +454,11 @@ class RuncExecutor(object):
                     pass
 
     def _resize_tty(self):
-        if self.tty is None:
+        if self.tty_fd is None:
             return
 
         # Get new terminal size
-        columns, lines = os.get_terminal_size(self.tty)
+        columns, lines = os.get_terminal_size(self.tty_fd)
 
         # Send resize to any containers with ttys
         with self._condition:

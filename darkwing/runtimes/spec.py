@@ -129,8 +129,6 @@ def update_spec_file(config, rundir, ouid=None, ogid=None):
     proc = spec['process']
     proc['user']['uid'] = config.data['user']['uid']
     proc['user']['gid'] = config.data['user']['gid']
-
-    # TODO: allow override
     proc['terminal'] = config.data['exec']['terminal']
 
     # TODO: make more idempotent (instead of depending on
