@@ -317,8 +317,8 @@ class RuncExecutor(object):
                 # Grab a fresh copy of the tty for resizing/settings
                 self.tty = os.open(
                     os.ttyname(fd.fileno()), os.O_NOCTTY | os.O_CLOEXEC)
-                # If stdin is a tty, we'll also need to set input raw
-                self.tty_raw = (fd is self.stdin)
+                # # If stdin is a tty, we'll also need to set input raw
+                # self.tty_raw = (fd is self.stdin)
                 break
 
     def _close_stdio(self):
@@ -337,7 +337,10 @@ class RuncExecutor(object):
                 continue
 
     # Setup/teardown
-    def _set_tty_raw(self):
+    def _set_tty_raw(self, container=None):
+        if container and container.use_tty:
+            self.tty_raw = True
+
         if self.tty is None or not self.tty_raw:
             return False
 
@@ -470,6 +473,7 @@ class RuncExecutor(object):
                 for sig in data:
                     if sig == signal.SIGCHLD:
                         # Wait for all children exited since last
+                        # TODO: try/except ChildProcessError, and wait() all
                         self._reap()
                     elif sig == signal.SIGWINCH:
                         # Resize container tty
@@ -532,7 +536,7 @@ class RuncExecutor(object):
         try:
             # Internal setup
             self._setup_stdio()
-            self._set_tty_raw()
+            self._set_tty_raw(container)
             self._setup_signals()
             self._set_subreaper(True)
             self._debug_log('Internal setup complete')
