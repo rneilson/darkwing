@@ -306,7 +306,7 @@ class RuncExecutor(object):
             # when closing fileobj, so we can write debug info if req'd
             self.stderr = open(
                 self.stderr, 'wb', buffering=0,
-                closefd=(self.stderr == sys.stderr.fileno())
+                closefd=(self.stderr != sys.stderr.fileno())
             )
 
         # Check if we're in a tty
@@ -498,7 +498,7 @@ class RuncExecutor(object):
     def _get_returncode(self):
         # Return first nonzero return code, or 0
         with self._condition:
-            for pid, con in self._containers:
+            for pid, con in self._containers.items():
                 if con.returncode:
                     return con.returncode
             # If any containers and no errors, return 0
@@ -620,6 +620,7 @@ class RuncExecutor(object):
                 raise RuncError(container.name, errmsg)
 
             # Get new tty through socket
+            # TODO: non-blocking
             sock, _ = tty_socket.accept()
             fds = array.array('i')
             msg, ancdata, flags, _ = sock.recvmsg(
@@ -818,7 +819,7 @@ class RuncExecutor(object):
         if not state:
             return False
 
-        runc_cmd = self._base_runc_cmd('start') + [container.name]
+        runc_cmd = self._base_runc_cmd('delete') + [container.name]
         proc = simple_command(runc_cmd, write_output=False)
         proc_out = proc.stdout.encode(errors='surrogateescape')
         if proc.returncode:
