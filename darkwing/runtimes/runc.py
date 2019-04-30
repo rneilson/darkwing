@@ -421,6 +421,7 @@ class RuncExecutor(object):
                     pid, sts = os.waitpid(-1, os.WNOHANG)
                 except ChildProcessError:
                     # No more children
+                    # TODO: let bubble up instead?
                     break
                 if pid == 0:
                     # No more zombies
@@ -480,7 +481,8 @@ class RuncExecutor(object):
                 for sig in data:
                     if sig == signal.SIGCHLD:
                         # Wait for all children exited since last
-                        # TODO: try/except ChildProcessError, and wait() all
+                        # TODO: catch ChildProcessError, and
+                        # wait() all still-running containers
                         self._reap()
                     elif sig == signal.SIGWINCH:
                         # Resize container tty
@@ -652,6 +654,7 @@ class RuncExecutor(object):
                 raise RuncError(container.name, errmsg)
         finally:
             tty_socket.close()
+            # TODO: remove socket
 
         if len(fds) == 0:
             if msg:
@@ -763,15 +766,20 @@ class RuncExecutor(object):
 
         # Parse state
         state = json.loads(proc_out)
+        # TODO: make optional
         container.pid = state['pid']
         container.status = state['status']
 
+        # TODO: return state instead
         return container
 
     def create_container(self, container):
         with self._condition:
             if self._closing:
                 raise RuntimeError('Cannot create container when closing')
+
+        # TODO: check if container exists, remove if stopped
+        # TODO: some kind of lockfile?
 
         if not container.rundir:
             container.make_rundir()
@@ -789,12 +797,14 @@ class RuncExecutor(object):
             '--pid-file', str(container.rundir_path / 'pid'),
         ])
 
+        # TODO: only setup tty if stdin and stdout are (the same?) tty
         if container.use_tty:
             self._create_container_tty(container, runc_cmd)
         else:
             self._create_container_notty(container, runc_cmd)
 
         # Now get state
+        # TODO: check
         self._get_container_state(container)
 
         # Start up i/o thread(s)
@@ -818,6 +828,7 @@ class RuncExecutor(object):
             raise RuncError(container.name, errmsg)
 
         # Now get state
+        # TODO: check
         self._get_container_state(container)
 
         return container
@@ -836,6 +847,8 @@ class RuncExecutor(object):
         if proc.returncode:
             errmsg = proc_out or f'Error removing container'
             raise RuncError(container.name, errmsg)
+
+        # TODO: remove pidfile
 
         container.status = 'removed'
         return container

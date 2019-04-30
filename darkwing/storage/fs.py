@@ -46,6 +46,7 @@ def unpack_image(config, rootless=None, write_output=True, exist_ok=True):
             # TODO: check if directory empty, remove if true
             if write_output:
                 print(f"Found existing rootfs at {rootfs_path}", flush=True)
+            # TODO: instead of early return, allow regenerating config
             return storage_path
         else:
             if write_output:

@@ -117,8 +117,10 @@ def _update_id_maps(id_maps, container_id, host_id):
 
 def update_spec_file(config, rundir, ouid=None, ogid=None):
     # Get config file
+    # TODO: take from clean/backup version instead
     spec_path = Path(config.data['storage']['base']) / 'config.json'
     spec = json.loads(spec_path.read_text())
+    # TODO: write clean/backup version
 
     # Set some basic things
     spec['hostname'] = config.data['dns']['hostname']
@@ -127,8 +129,12 @@ def update_spec_file(config, rundir, ouid=None, ogid=None):
     proc = spec['process']
     proc['user']['uid'] = config.data['user']['uid']
     proc['user']['gid'] = config.data['user']['gid']
+
+    # TODO: allow override
     proc['terminal'] = config.data['exec']['terminal']
 
+    # TODO: make more idempotent (instead of depending on
+    # current config file state)
     if config.data['exec']['dir']:
         proc['cwd'] = config.data['exec']['dir']
     if config.data['exec']['cmd']:
