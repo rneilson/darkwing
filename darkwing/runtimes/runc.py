@@ -38,6 +38,7 @@ def iopump(read_from, write_to, stop_event=None, tty_eof=False,
     buf = bytearray()
     bufsize = io.DEFAULT_BUFFER_SIZE // 2
     last_byte = None
+    use_read1 = hasattr(read_from, 'read1')
     exc = None
 
     # Specialty EOF handling
@@ -87,20 +88,20 @@ def iopump(read_from, write_to, stop_event=None, tty_eof=False,
                 rlist.append(write_to)
 
             # Wait for something available
-            rlist, wlist, _ = select.select(
+            readable, writeable, _ = select.select(
                 rlist, wlist, [], select_timeout
             )
 
             # Write end in readable list means pipe closed
-            if write_to in rlist:
+            if write_to in readable:
                 raise BrokenPipeError
 
             # Now we read
             if read_from:
-                if read_from in rlist:
+                if read_from in readable:
                     try:
                         # Buffered fileobjs might have .read1(), so use that
-                        if hasattr(read_from, 'read1'):
+                        if use_read1:
                             data = read_from.read1(bufsize)
                         else:
                             data = read_from.read(bufsize)
@@ -133,8 +134,14 @@ def iopump(read_from, write_to, stop_event=None, tty_eof=False,
                         pass
                     read_from = None
 
+            # Intermezzo
+            if buf and write_to not in wlist and write_to not in writeable:
+                _, writeable, _ = select.select(
+                    [], [write_to], [], 0
+                )
+
             # And now we write
-            if write_to in wlist:
+            if write_to in writeable:
                 try:
                     data = buf[:bufsize]
                     sent = write_to.write(data)

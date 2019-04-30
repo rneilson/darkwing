@@ -42,13 +42,15 @@ def send_tty_eof(fd, last_sent=None):
         # Get terminal's current EOF character
         cc = termios.tcgetattr(fd)[6]
         eof = cc[termios.VEOF]
-        # If the last sent byte wasn't an EOL, the EOF will only
-        # end the current line, not actually function as close
-        if last_sent is not None:
-            # VEOL/VEOL2 as null bytes don't seem to matter...
-            eol = { b'\n', eof }
-            if last_sent[-1:] not in eol:
-                eof = eof * 2
+        # # If the last sent byte wasn't an EOL, the EOF will only
+        # # end the current line, not actually function as close
+        # if last_sent is not None:
+        #     # VEOL/VEOL2 as null bytes don't seem to matter...
+        #     # eol = { b'\n' }
+        #     # eol = { eof }
+        #     eol = { b'\n', eof }
+        #     if last_sent[-1:] not in eol:
+        #         eof = eof * 2
         try:
             n = os.write(fd, eof)
         except (BlockingIOError, InterruptedError):
