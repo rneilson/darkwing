@@ -26,8 +26,8 @@ from . import spec
 def _noop_sighandler(signum, frame):
     pass
 
-def iopump(read_from, write_to, stop_event=None, tty_eof=False,
-           pipe_eof=True, select_timeout=0.2, future=None, print_exc=False):
+def iopump(read_from, write_to, stop_event=None, pipe_eof=True,
+           select_timeout=0.2, future=None, print_exc=False):
     # Allow giving raw fds
     if isinstance(read_from, int):
         read_from = open(read_from, 'rb', buffering=0)
@@ -37,13 +37,11 @@ def iopump(read_from, write_to, stop_event=None, tty_eof=False,
     # Anything else to init?
     buf = bytearray()
     bufsize = io.DEFAULT_BUFFER_SIZE // 2
-    last_byte = None
     use_read1 = hasattr(read_from, 'read1')
     exc = None
 
     # Specialty EOF handling
-    if tty_eof:
-        tty_eof = write_to.isatty()
+    if write_to.isatty():
         pipe_eof = False
     elif pipe_eof:
         # If write end is a pipe, we can do the reader trick
@@ -98,7 +96,13 @@ def iopump(read_from, write_to, stop_event=None, tty_eof=False,
 
             # Now we read
             if read_from:
-                if read_from in readable:
+                if stop_event and stop_event.is_set():
+                    # External stop event, assume closed
+                    data = b''
+                elif write_to.closed:
+                    # Write end already closed, stop now
+                    data = b''
+                elif read_from in readable:
                     try:
                         # Buffered fileobjs might have .read1(), so use that
                         if use_read1:
@@ -113,12 +117,6 @@ def iopump(read_from, write_to, stop_event=None, tty_eof=False,
                             data = b''
                         else:
                             raise
-                elif stop_event and stop_event.is_set():
-                    # External stop event, assume closed
-                    data = b''
-                elif write_to.closed:
-                    # Write end already closed, stop now
-                    data = b''
                 else:
                     data = None
 
@@ -157,7 +155,6 @@ def iopump(read_from, write_to, stop_event=None, tty_eof=False,
                     pass
                 # Update buffer
                 if sent:
-                    last_byte = bytes(buf[sent - 1:sent])
                     del buf[:sent]
 
             # Bit of housekeeping
@@ -177,11 +174,6 @@ def iopump(read_from, write_to, stop_event=None, tty_eof=False,
         if read_from:
             try:
                 read_from.close()
-            except OSError as e:
-                pass
-        if tty_eof:
-            try:
-                send_tty_eof(write_to, last_sent=last_byte)
             except OSError as e:
                 pass
         try:
@@ -736,24 +728,26 @@ class RuncExecutor(object):
         # Event to help stop i/o threads
         stop_ev = threading.Event()
         container._stop_event = stop_ev
+        # Shorter select timeout if a tty
+        select_time = 0.1 if container.use_tty else 0.2
         # Setup each i/o thread
         if container.stdin:
             container._io_threads.append(threading.Thread(
                 name=f"{container.name}-stdin", daemon=False,
                 target=iopump, args=(self.stdin, container.stdin),
-                kwargs={'tty_eof': container.use_tty, 'stop_event': stop_ev},
+                kwargs={'stop_event': stop_ev, 'select_timeout': select_time},
             ))
         if container.stdout:
             container._io_threads.append(threading.Thread(
                 name=f"{container.name}-stdout", daemon=False,
                 target=iopump, args=(container.stdout, self.stdout),
-                kwargs={'tty_eof': False, 'stop_event': stop_ev},
+                kwargs={'stop_event': stop_ev, 'select_timeout': select_time},
             ))
         if container.stderr:
             container._io_threads.append(threading.Thread(
                 name=f"{container.name}-stderr", daemon=False,
                 target=iopump, args=(container.stderr, self.stderr),
-                kwargs={'tty_eof': False, 'stop_event': stop_ev},
+                kwargs={'stop_event': stop_ev, 'select_timeout': select_time},
             ))
         for t in container._io_threads:
             t.start()
