@@ -27,7 +27,7 @@ def _noop_sighandler(signum, frame):
     pass
 
 def iopump(read_from, write_to, stop_event=None, tty_eof=False,
-           pipe_eof=True, select_timeout=0.1, future=None, print_exc=False):
+           pipe_eof=True, select_timeout=0.2, future=None, print_exc=False):
     # Allow giving raw fds
     if isinstance(read_from, int):
         read_from = open(read_from, 'rb', buffering=0)
@@ -113,11 +113,11 @@ def iopump(read_from, write_to, stop_event=None, tty_eof=False,
                             data = b''
                         else:
                             raise
-                elif write_to.closed:
-                    # Write end already closed, stop now
-                    data = b''
                 elif stop_event and stop_event.is_set():
                     # External stop event, assume closed
+                    data = b''
+                elif write_to.closed:
+                    # Write end already closed, stop now
                     data = b''
                 else:
                     data = None
@@ -350,7 +350,7 @@ class RuncExecutor(object):
         # Only use tty mode if both host and container using ttys
         # TODO: move elsewhere?
         if container and container.use_tty:
-            self.tty_raw = (self.stdin.isatty() and self.stdout.isatty())
+            self.tty_raw = output_isatty(self.stdin, self.stdout)
             container.use_tty = self.tty_raw
 
         if self.tty_fd is None or not self.tty_raw:
@@ -551,7 +551,7 @@ class RuncExecutor(object):
         try:
             # Internal setup
             self._setup_stdio()
-            self._set_tty_raw(container)
+            self._set_tty_raw(container)    # TODO: move inside create?
             self._setup_signals()
             self._set_subreaper(True)
             self._debug_log('Internal setup complete')
@@ -561,11 +561,12 @@ class RuncExecutor(object):
             created = self.create_container(container)
             if not created:
                 return created
-            self._debug_log('Container created')
+            self._debug_log(f'Container created (tty: {self.tty_raw})')
 
             # TODO: setup container networking
             
             # Initial tty resize
+            # TODO: set tty raw here instead?
             self._resize_tty()
 
             # Anything else in particular before we start?
@@ -660,7 +661,7 @@ class RuncExecutor(object):
                 raise RuncError(container.name, errmsg)
         finally:
             tty_socket.close()
-            # TODO: remove socket
+            tty_socket_path.unlink()
 
         if len(fds) == 0:
             if msg:
@@ -854,7 +855,11 @@ class RuncExecutor(object):
             errmsg = proc_out or f'Error removing container'
             raise RuncError(container.name, errmsg)
 
-        # TODO: remove pidfile
+        # Remove pidfile
+        try:
+            (container.rundir_path / 'pid').unlink()
+        except FileNotFoundError:
+            pass
 
         container.status = 'removed'
         return container
