@@ -754,7 +754,8 @@ class RuncExecutor(object):
 
         return container
 
-    def _get_container_state(self, container, raise_on_failure=True):
+    def _get_container_state(self, container, update=False,
+                             raise_on_failure=True):
         runc_cmd = self._base_runc_cmd('state') + [container.name]
         proc = simple_command(runc_cmd, write_output=False)
         proc_out = proc.stdout.encode(errors='surrogateescape')
@@ -767,25 +768,40 @@ class RuncExecutor(object):
 
         # Parse state
         state = json.loads(proc_out)
-        # TODO: make optional
-        container.pid = state['pid']
-        container.status = state['status']
+        
+        if update:
+            container.status = state['status']
+            if state['pid']:
+                container.pid = state['pid']
 
-        # TODO: return state instead
-        return container
+        return state
 
     def create_container(self, container):
         with self._condition:
             if self._closing:
                 raise RuntimeError('Cannot create container when closing')
 
-        # TODO: check if container exists, remove if stopped
-        # TODO: some kind of lockfile?
-
         if not container.rundir:
             container.make_rundir()
 
-        container.status = 'creating'
+        # Check if container exists, remove if stopped
+        pid_path = container.rundir_path / 'pid'
+        try:
+            pid = pid_path.read_text()
+            # Check if process running
+            try:
+                os.kill(int(pid), 0)
+                # Technically this doesn't guarantee the pid
+                # in question is this container, but /shrug
+                # TODO: check state
+                errmsg = f"Container already exists"
+                raise RuncError(container.name, errmsg) from None
+            except ProcessLookupError:
+                # PID not running, carry on
+                pid_path.unlink()
+        except FileNotFoundError:
+            # Good to go
+            pass
 
         # Update OCI spec file
         spec.update_spec_file(container.config, container.rundir)
@@ -795,7 +811,7 @@ class RuncExecutor(object):
         # TODO: other options? Specify '--rootless'?
         runc_cmd.extend([
             '--bundle', str(container.path),
-            '--pid-file', str(container.rundir_path / 'pid'),
+            '--pid-file', str(pid_path),
         ])
 
         # TODO: only setup tty if stdin and stdout are (the same?) tty
@@ -805,8 +821,11 @@ class RuncExecutor(object):
             self._create_container_notty(container, runc_cmd)
 
         # Now get state
-        # TODO: check
-        self._get_container_state(container)
+        state = self._get_container_state(container, update=True)
+        if state['status'] != 'created':
+            raise RuncError(
+                container.name, f"Unexpected status {state['status']}"
+            )
 
         # Start up i/o thread(s)
         self._setup_container_stdio(container)
@@ -829,8 +848,11 @@ class RuncExecutor(object):
             raise RuncError(container.name, errmsg)
 
         # Now get state
-        # TODO: check
-        self._get_container_state(container)
+        state = self._get_container_state(container, update=True)
+        if state['status'] != 'running':
+            raise RuncError(
+                container.name, f"Unexpected status {state['status']}"
+            )
 
         return container
 
@@ -841,6 +863,10 @@ class RuncExecutor(object):
         state = self._get_container_state(container, raise_on_failure=False)
         if not state:
             return False
+        if state['status'] != 'stopped':
+            raise RuncError(
+                container.name, 'Cannot remove container unless stopped'
+            )
 
         runc_cmd = self._base_runc_cmd('delete') + [container.name]
         proc = simple_command(runc_cmd, write_output=False)
