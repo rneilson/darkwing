@@ -37,29 +37,31 @@ def unpack_image(config, rootless=None, write_output=True, exist_ok=True):
     config_cmd.append(str(config_path))
 
     # Clear out existing rootfs (or bail)
+    do_unpack = True
     try:
         # Using exist_ok=False here so we can EAFP
         rootfs_path.mkdir(mode=0o770, parents=False, exist_ok=False)
     except FileExistsError:
-        if exist_ok:
+        # Check if directory empty
+        file_list = os.listdir(rootfs_path)
+        if file_list and exist_ok:
             # Early return, assume already unpacked
-            # TODO: check if directory empty, remove if true
+            do_unpack = False
             if write_output:
                 print(f"Found existing rootfs at {rootfs_path}", flush=True)
-            # TODO: instead of early return, allow regenerating config
-            return storage_path
-        else:
+        elif file_list:
             if write_output:
                 print(f"Removing existing rootfs at {rootfs_path}", flush=True)
             shutil.rmtree(rootfs_path)
             rootfs_path.mkdir(mode=0o770)
 
-    if write_output:
-        print(f"Unpacking rootfs into {rootfs_path}", flush=True)
-    proc = simple_command(
-        unpack_cmd, write_output=write_output, cwd=storage_path
-    )
-    proc.check_returncode()
+    if do_unpack:
+        if write_output:
+            print(f"Unpacking rootfs into {rootfs_path}", flush=True)
+        proc = simple_command(
+            unpack_cmd, write_output=write_output, cwd=storage_path
+        )
+        proc.check_returncode()
 
     if write_output:
         print(f"Generating config at {config_path}", flush=True)
