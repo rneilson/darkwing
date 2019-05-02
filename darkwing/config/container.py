@@ -123,7 +123,7 @@ class Container(object):
         return self
 
     def unpack_image(self, storage_type='fs', make_rundir=True,
-                     recreate=False, quiet=False):
+                     recreate=False, reconfig=True, quiet=False):
         try:
             storage_lib = getattr(storage, storage_type)
         except AttributeError:
@@ -134,7 +134,8 @@ class Container(object):
 
         # Unpack image (possibly remove existing)
         storage_path = storage_lib.unpack_image(
-            self.config, write_output=not quiet, exist_ok=not recreate
+            self.config, write_output=not quiet,
+            refresh_rootfs=recreate, refresh_config=reconfig,
         )
         # Update storage path if required (future feature)
         if self.path != storage_path:

@@ -117,10 +117,18 @@ def _update_id_maps(id_maps, container_id, host_id):
 
 def update_spec_file(config, rundir, ouid=None, ogid=None):
     # Get config file
-    # TODO: take from clean/backup version instead
     spec_path = Path(config.data['storage']['base']) / 'config.json'
-    spec = json.loads(spec_path.read_text())
-    # TODO: write clean/backup version
+    orig_path = Path(config.data['storage']['base']) / 'config.orig.json'
+    try:
+        # If original/backup present, prefer as clean version
+        spec_str = orig_path.read_text()
+    except FileNotFoundError:
+        # No backup, so assume config is fresh
+        spec_str = spec_path.read_text()
+        # Write backup
+        orig_path.write_text(spec_str)
+
+    spec = json.loads(spec_str)
 
     # Set some basic things
     spec['hostname'] = config.data['dns']['hostname']
@@ -173,6 +181,6 @@ def update_spec_file(config, rundir, ouid=None, ogid=None):
         )
 
     # Write updated file
-    spec_path.write_text(json.dumps(spec, indent=2))
+    spec_path.write_text(json.dumps(spec, indent='\t'))
 
     return spec_path

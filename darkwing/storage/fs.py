@@ -9,7 +9,8 @@ from darkwing.utils import probably_root, simple_command
 def fetch_image():
     raise NotImplementedError
 
-def unpack_image(config, rootless=None, write_output=True, exist_ok=True):
+def unpack_image(config, rootless=None, write_output=True,
+                 refresh_rootfs=False, refresh_config=True):
     if rootless is None:
         rootless = not probably_root()
 
@@ -32,6 +33,7 @@ def unpack_image(config, rootless=None, write_output=True, exist_ok=True):
     storage_path = Path(storage['base'])
     rootfs_path = storage_path / 'rootfs'
     config_path = storage_path / 'config.json'
+    config_orig = storage_path / 'config.orig.json'
     unpack_cmd.append(str(rootfs_path))
     config_cmd.append(f"--rootfs={rootfs_path}")
     config_cmd.append(str(config_path))
@@ -44,7 +46,7 @@ def unpack_image(config, rootless=None, write_output=True, exist_ok=True):
     except FileExistsError:
         # Check if directory empty
         file_list = os.listdir(rootfs_path)
-        if file_list and exist_ok:
+        if file_list and not refresh_rootfs:
             # Early return, assume already unpacked
             do_unpack = False
             if write_output:
@@ -63,11 +65,17 @@ def unpack_image(config, rootless=None, write_output=True, exist_ok=True):
         )
         proc.check_returncode()
 
-    if write_output:
-        print(f"Generating config at {config_path}", flush=True)
-    proc = simple_command(
-        config_cmd, write_output=write_output, cwd=storage_path
-    )
-    proc.check_returncode()
+    if refresh_config:
+        if write_output:
+            print(f"Generating config at {config_path}", flush=True)
+        proc = simple_command(
+            config_cmd, write_output=write_output, cwd=storage_path
+        )
+        proc.check_returncode()
+        # Clear backup/original config
+        try:
+            config_orig.unlink()
+        except FileNotFoundError:
+            pass
 
     return storage_path
