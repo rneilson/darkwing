@@ -196,10 +196,14 @@ def iopump(read_from, write_to, stop_event=None, pipe_eof=True,
 
 class RuncError(Exception):
 
-    def __init__(self, name, message):
-        super().__init__(f"runc error for container {name}")
+    def __init__(self, name, message, code=1):
+        super().__init__(f"runc error for container {name}: {message}")
         self.name = name
         self.message = message
+        self.code = code
+
+    def __str__(self):
+        return f"Error for container {name}: {message}"
 
     # TODO: __repr__()
 
@@ -586,7 +590,7 @@ class RuncExecutor(object):
                 self.remove_container(container)
                 self._debug_log('Container removed')
         except RuncError as e:
-            self._write_log(f"{e!r}\n{e.message}")
+            self._write_log(f"{e}")
         except Exception as e:
             self._write_log(traceback.format_exc())
         finally:
