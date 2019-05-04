@@ -90,7 +90,7 @@ def default_container(name, context, image=None, tag='latest', uid=0, gid=0):
             'dir': '',
             'cmd': '',
             'args': [],
-            'terminal': False,
+            'terminal': True,
         },
         'env': {
             'vars': [],

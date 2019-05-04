@@ -87,11 +87,13 @@ class Container(object):
 
     @property
     def use_tty(self):
-        return self.config.data['exec'].get('terminal', False)
+        if not hasattr(self, '_use_tty'):
+            self._use_tty = self.config.data['exec'].get('terminal', True)
+        return self._use_tty
 
     @use_tty.setter
     def use_tty(self, value):
-        self.config.data['exec']['terminal'] = value
+        self._use_tty = value
 
     @property
     def config_path(self):

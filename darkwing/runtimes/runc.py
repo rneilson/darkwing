@@ -338,13 +338,7 @@ class RuncExecutor(object):
                 continue
 
     # Setup/teardown
-    def _set_tty_raw(self, container=None):
-        # Only use tty mode if both host and container using ttys
-        # TODO: move elsewhere?
-        if container and container.use_tty:
-            self.tty_raw = output_isatty(self.stdin, self.stdout)
-            container.use_tty = self.tty_raw
-
+    def _set_tty_raw(self):
         if self.tty_fd is None or not self.tty_raw:
             return False
 
@@ -356,6 +350,21 @@ class RuncExecutor(object):
         self._debug_log('Set TTY to raw mode')
 
         return True
+
+    def _setup_tty(self, container):
+        # Determine TTY
+        # Only use tty mode if both host and container using ttys
+        if self.tty_fd is not None:
+            self.tty_raw = (
+                container and
+                container.use_tty and
+                output_isatty(self.stdin, self.stdout)
+            )
+        if container and container.use_tty and not self.tty_raw:
+            container.use_tty = False
+        self._debug_log(f'TTY fd: {self.tty_fd}, raw: {self.tty_raw}')
+
+        return self._set_tty_raw()
 
     def _reset_tty(self):
         if self.tty_fd is None or not self.tty_raw:
@@ -543,17 +552,15 @@ class RuncExecutor(object):
         try:
             # Internal setup
             self._setup_stdio()
-            self._set_tty_raw(container)    # TODO: move inside create?
+            self._setup_tty(container)
             self._setup_signals()
             self._set_subreaper(True)
             self._debug_log('Internal setup complete')
 
             # Assuming container unpacked and ready
             # TODO: allow running multiple containers
-            created = self.create_container(container)
-            if not created:
-                return created
-            self._debug_log(f'Container created (tty: {self.tty_raw})')
+            self.create_container(container)
+            self._debug_log(f'Container created (tty: {container.use_tty})')
 
             # TODO: setup container networking
             
@@ -807,6 +814,7 @@ class RuncExecutor(object):
         spec.update_spec_file(
             container.config, container.rundir,
             allow_tty=container.use_tty,
+            # TODO: force_tty?
         )
 
         # Create container runc-side
