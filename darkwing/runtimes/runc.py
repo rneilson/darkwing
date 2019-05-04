@@ -591,8 +591,10 @@ class RuncExecutor(object):
                 self._debug_log('Container removed')
         except RuncError as e:
             self._write_log(f"{e}")
+            return e.code
         except Exception as e:
             self._write_log(traceback.format_exc())
+            return 1
         finally:
             # Internal teardown
             self._close()

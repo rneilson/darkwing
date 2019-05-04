@@ -11,10 +11,12 @@ if __name__ == '__main__':
     if not args:
         sys.exit('No container specified')
 
-    name, _, context_name = args[0].partition(':')
-    ctx = context.get_context_config(context_name or 'default')
+    name, sep, context_name = args[0].partition(':')
+    ctx = context.get_context_config(context_name if sep else 'default')
     con = container.load_container(name, ctx, make_rundir=True)
 
     # runc = RuncExecutor(debug=True)
     runc = RuncExecutor(debug=False)
-    runc.run_until_complete(con, remove=True)
+    code = runc.run_until_complete(con, remove=True)
+    if code:
+        sys.exit(code)
