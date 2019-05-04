@@ -240,10 +240,10 @@ def make_container_config(name, context, image=None, tag='latest', uid=0,
     if egid is None:
         egid = os.getegid()
     
-    config_base = Path(context['configs']['base'])
+    config_base = Path(context.data['configs']['base'])
     config_path = (config_base / name).with_suffix('.toml')
 
-    owner = context['owner']
+    owner = context.data['owner']
     do_chown = owner['uid'] != euid or owner['gid'] != egid
     cuid, cgid = (owner['uid'], owner['gid']) if do_chown else (None, None)
 

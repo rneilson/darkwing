@@ -72,9 +72,9 @@ def default_container(name, context, image=None, tag='latest', uid=0, gid=0):
     if image is None:
         image = name
 
-    image_path = Path(context['storage']['images']) / 'oci' / image
-    storage_path = Path(context['storage']['containers']) / name
-    secrets_path = Path(context['configs']['secrets']) / name
+    image_path = Path(context.data['storage']['images']) / 'oci' / image
+    storage_path = Path(context.data['storage']['containers']) / name
+    secrets_path = Path(context.data['configs']['secrets']) / name
 
     return {
         'image': {
@@ -106,10 +106,10 @@ def default_container(name, context, image=None, tag='latest', uid=0, gid=0):
             'drop': [],
         },
         'dns': {
-            'hostname': f"{name}.{context['dns']['domain']}",
-            'domain': context['dns']['domain'],
+            'hostname': f"{name}.{context.data['dns']['domain']}",
+            'domain': context.data['dns']['domain'],
         },
-        'network': { **context['network'] },
+        'network': { **context.data['network'] },
         'secrets': {
             'target': '/run/secrets',
             'sources': [
@@ -121,7 +121,7 @@ def default_container(name, context, image=None, tag='latest', uid=0, gid=0):
             ],
         },
         'volumes': {
-            'shared': context['storage']['volumes'],
+            'shared': context.data['storage']['volumes'],
             'private': str(storage_path / 'volumes'),
             'mounts': [],
         },
