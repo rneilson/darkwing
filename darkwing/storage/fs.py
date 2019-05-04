@@ -10,7 +10,7 @@ def fetch_image():
     raise NotImplementedError
 
 def unpack_image(config, rootless=None, write_output=True,
-                 refresh_rootfs=False, refresh_config=True):
+                 refresh_rootfs=False, refresh_config=False):
     if rootless is None:
         rootless = not probably_root()
 

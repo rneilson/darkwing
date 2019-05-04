@@ -115,7 +115,7 @@ def _update_id_maps(id_maps, container_id, host_id):
 
     return new_maps
 
-def update_spec_file(config, rundir, ouid=None, ogid=None):
+def update_spec_file(config, rundir, ouid=None, ogid=None, allow_tty=None):
     # Get config file
     spec_path = Path(config.data['storage']['base']) / 'config.json'
     orig_path = Path(config.data['storage']['base']) / 'config.orig.json'
@@ -138,6 +138,8 @@ def update_spec_file(config, rundir, ouid=None, ogid=None):
     proc['user']['uid'] = config.data['user']['uid']
     proc['user']['gid'] = config.data['user']['gid']
     proc['terminal'] = config.data['exec']['terminal']
+    if allow_tty is not None:
+        proc['terminal'] = allow_tty and proc['terminal']
 
     # TODO: make more idempotent (instead of depending on
     # current config file state)

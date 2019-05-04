@@ -804,7 +804,10 @@ class RuncExecutor(object):
             pass
 
         # Update OCI spec file
-        spec.update_spec_file(container.config, container.rundir)
+        spec.update_spec_file(
+            container.config, container.rundir,
+            allow_tty=container.use_tty,
+        )
 
         # Create container runc-side
         runc_cmd = self._base_runc_cmd('create')
