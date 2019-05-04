@@ -3,6 +3,8 @@ import json
 import shlex
 from pathlib import Path
 
+from darkwing.utils.files import ensure_dirs
+
 def _split_args(args):
     if isinstance(args, str):
         return shlex.split(args)
@@ -53,34 +55,49 @@ def _update_environment(env, env_config):
 
     return [ f"{name}={value}" for name, value in env_vars.items() ]
 
-def _mount_spec(mount, volumes, rundir_data):
-    # Vary based on mount type
-    mount_type = mount['type']
-
+def _mount_source_path(mount_type, mount_src, volumes, rundir_data):
     if mount_type == 'bind':
-        mount_path = Path(mount['source'])
+        mount_path = Path(mount_src)
+        # Only absolute paths allowed
+        if not mount_path.is_absolute():
+            raise ValueError(f'Bind mount "{mount_path}" must be absolute')
     elif mount_type == 'shared':
-        mount_path = Path(volumes['shared']) / mount['source']
+        mount_path = Path(volumes['shared']) / mount_src.lstrip('/')
     elif mount_type == 'private':
-        mount_path = Path(volumes['private']) / mount['source']
+        mount_path = Path(volumes['private']) / mount_src.lstrip('/')
     elif mount_type == 'runtime':
         if rundir_data:
-            mount_path = Path(rundir_data['volumes']) / mount['source']
+            mount_path = Path(rundir_data['volumes']) / mount_src.lstrip('/')
         else:
             raise ValueError(
                 f'Runtime volume mount requested for '
-                f'{mount["source"]}, but no runtime directory given'
+                f'"{mount_src}", but no runtime directory given'
             )
     else:
         raise ValueError(f'Unknown mount type: "{mount_type}"')
+
+    return mount_path
+
+def _mount_spec(mount, volumes, rundir_data):
+    # Vary based on mount type
+    mount_type = mount['type']
+    mount_src = mount['source']
+    mount_path = _mount_source_path(
+        mount_type, mount_src, volumes, rundir_data
+    )
 
     # Base spec
     mount_spec = {
         'destination': mount['target'],
         'type': 'bind',
         'source': str(mount_path),
-        'options': ['bind', 'nodev', 'nosuid'],
+        'options': ['nodev', 'nosuid'],
     }
+    # Determine bind type
+    if mount.get('recursive'):
+        mount_spec['options'].append('rbind')
+    else:
+        mount_spec['options'].append('bind')
     # Add read-only option
     if mount.get('readonly'):
         mount_spec['options'].append('ro')
@@ -101,6 +118,27 @@ def _update_mounts(mounts, volumes, rundir_data):
 
     return list(mount_map.values())
 
+def _ensure_mounts(volumes, rundir_data, ouid=None, ogid=None):
+    mount_dirs = []
+
+    for mount in volumes['mounts']:
+        mount_type = mount['type']
+        mount_path = _mount_source_path(
+            mount_type, mount['source'], volumes, rundir_data
+        )
+        if mount_type == 'bind':
+            # For bind mounts, ensure exists
+            if not mount_path.exists():
+                raise ValueError(f'Bind mount "{mount_path}" must exist')
+        else:
+            # For volumes, ensure directory created
+            dir_mode = mount.get('mode', '0770')
+            if isinstance(dir_mode, str):
+                dir_mode = int(dir_mode, 8)
+            mount_dirs.append((mount_path, dir_mode))
+
+    return ensure_dirs(mount_dirs, uid=ouid, gid=ogid)
+
 def _update_id_maps(id_maps, container_id, host_id):
     new_maps = []
 
@@ -115,7 +153,9 @@ def _update_id_maps(id_maps, container_id, host_id):
 
     return new_maps
 
-def update_spec_file(config, rundir, ouid=None, ogid=None, allow_tty=None):
+def update_spec_file(config, rundir, ouid=None, ogid=None,
+                     allow_tty=None, force_tty=None, ensure_mounts=True):
+    assert allow_tty is None or force_tty is None
     # Get config file
     spec_path = Path(config.data['storage']['base']) / 'config.json'
     orig_path = Path(config.data['storage']['base']) / 'config.orig.json'
@@ -137,9 +177,13 @@ def update_spec_file(config, rundir, ouid=None, ogid=None, allow_tty=None):
     proc = spec['process']
     proc['user']['uid'] = config.data['user']['uid']
     proc['user']['gid'] = config.data['user']['gid']
-    proc['terminal'] = config.data['exec']['terminal']
-    if allow_tty is not None:
-        proc['terminal'] = allow_tty and proc['terminal']
+    # TTY settings
+    if force_tty is not None:
+        proc['terminal'] = force_tty
+    else:
+        proc['terminal'] = config.data['exec']['terminal']
+        if allow_tty is not None:
+            proc['terminal'] = allow_tty and proc['terminal']
 
     # TODO: make more idempotent (instead of depending on
     # current config file state)
@@ -161,6 +205,8 @@ def update_spec_file(config, rundir, ouid=None, ogid=None, allow_tty=None):
             proc['capabilities'], config.data['caps']
         )
 
+    # TODO: rlimits
+
     # Update environment
     proc['env'] = _update_environment(proc['env'], config.data['env'])
 
@@ -169,9 +215,15 @@ def update_spec_file(config, rundir, ouid=None, ogid=None, allow_tty=None):
         spec['mounts'], config.data['volumes'],
         rundir.data if rundir else None
     )
+    if ensure_mounts:
+        _ensure_mounts(
+            config.data['volumes'],
+            rundir.data if rundir else None,
+            ouid=ouid, ogid=ogid
+        )
 
     # Update rootless mapped uid/gid
-    # TODO: additional mappings?
+    # TODO: additional mappings
     linux = spec['linux']
     if ouid is not None:
         linux['uidMappings'] = _update_id_maps(
