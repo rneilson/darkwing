@@ -223,6 +223,7 @@ class RuncExecutor(object):
     )
     RAISE_ON_SIGNALS = (
         signal.SIGABRT,
+        signal.SIGALRM,
     )
 
     def __init__(self, context_name='default', state_dir=None,
@@ -604,9 +605,9 @@ class RuncExecutor(object):
                 self.remove_container(container)
                 self._debug_log('Container removed')
 
-        except RuncError as e:
-            self._write_log(f"{e}")
-            self.returncode = e.code
+        # except RuncError as e:
+        #     self._write_log(f"{e}")
+        #     self.returncode = e.code
 
         except Exception as e:
             self._write_log(traceback.format_exc())
@@ -647,24 +648,26 @@ class RuncExecutor(object):
 
         # Run create command
         try:
+            sock = None
             proc = subprocess.Popen(
                 runc_cmd, cwd=container.path, stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             )
-            try:
-                # Wait about ~50ms, see if it failed right away
-                returncode = proc.wait(0.050)
-            except subprocess.TimeoutExpired:
-                # Good to go
-                pass
-            else:
-                errmsg = proc.stderr.read().decode(errors='surrogateescape')
-                raise RuncError(container.name, errmsg, code=returncode)
+            # try:
+            #     # Wait about ~50ms, see if it failed right away
+            #     returncode = proc.wait(0.050)
+            # except subprocess.TimeoutExpired:
+            #     # Good to go
+            #     pass
+            # else:
+            #     errmsg = proc.stderr.read().decode(errors='surrogateescape')
+            #     raise RuncError(container.name, errmsg, code=returncode)
 
-            # Get new tty through socket
-            # TODO: non-blocking
             try:
-                sock = None
+                # Set alarm for timeout
+                signal.alarm(1)
+                # Get new tty through socket
+                # TODO: non-blocking?
                 sock, _ = tty_socket.accept()
                 fds = array.array('i')
                 msg, ancdata, flags, _ = sock.recvmsg(
@@ -677,6 +680,7 @@ class RuncExecutor(object):
                         fd_len = len(cmsg_data) - (len(cmsg_data) % fds.itemsize)
                         fds.fromstring(cmsg_data[:fd_len])
             finally:
+                signal.alarm(0)
                 if sock:
                     sock.close()
                 # Now handle start process
