@@ -102,6 +102,14 @@ class Container(object):
     @property
     def rundir_path(self):
         return self.rundir.path if self.rundir else None
+
+    @property
+    def pidfile_path(self):
+        return self.rundir.path / 'pid' if self.rundir else None
+
+    @property
+    def lockfile_path(self):
+        return self.path / 'darkwing.lock'
     
     @property
     def context_name(self):

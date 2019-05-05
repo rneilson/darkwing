@@ -26,6 +26,9 @@ from . import spec
 def _noop_sighandler(signum, frame):
     pass
 
+def _raise_sighandler(signum, frame):
+    raise Exception(f'Caught signal {signum}')
+
 def iopump(read_from, write_to, stop_event=None, pipe_eof=True,
            select_timeout=0.2, future=None, print_exc=False):
     # Allow giving raw fds
@@ -197,13 +200,13 @@ def iopump(read_from, write_to, stop_event=None, pipe_eof=True,
 class RuncError(Exception):
 
     def __init__(self, name, message, code=1):
-        super().__init__(f"runc error for container {name}: {message}")
+        super().__init__(f'runc error for container "{name}": {message}')
         self.name = name
         self.message = message
         self.code = code
 
     def __str__(self):
-        return f"Error for container {name}: {message}"
+        return f'Error for container "{self.name}": {self.message}'
 
     # TODO: __repr__()
 
@@ -212,11 +215,14 @@ class RuncExecutor(object):
 
     # TODO: add (configurable) signal to force-kill containers
     FORWARD_SIGNALS = (
-        signal.SIGABRT,
+        # signal.SIGABRT,
         signal.SIGINT,
         signal.SIGHUP,
         signal.SIGTERM,
         signal.SIGQUIT,
+    )
+    RAISE_ON_SIGNALS = (
+        signal.SIGABRT,
     )
 
     def __init__(self, context_name='default', state_dir=None,
@@ -234,6 +240,8 @@ class RuncExecutor(object):
         # Host process state
         self.uid = uid
         self.gid = gid
+        self.pid = os.getpid()
+        self.returncode = None
         self._signals = {}
         self._sig_rsock = None
         self._sig_wsock = None
@@ -400,6 +408,9 @@ class RuncExecutor(object):
         for sig in sigs:
             # Store old handler for later
             self._signals[sig] = signal.signal(sig, _noop_sighandler)
+        # Escape-hatch signals
+        for sig in self.RAISE_ON_SIGNALS:
+            self._signals[sig] = signal.signal(sig, _raise_sighandler)
 
     def _restore_signals(self):
         # Restore signal handlers
@@ -584,17 +595,23 @@ class RuncExecutor(object):
 
             # TODO: teardown container networking
 
+            # Get container return code before removing
+            self.returncode = self._get_returncode()
+
             # Cleanup container remnants
             # TODO: multiple
             if remove:
                 self.remove_container(container)
                 self._debug_log('Container removed')
+
         except RuncError as e:
             self._write_log(f"{e}")
-            return e.code
+            self.returncode = e.code
+
         except Exception as e:
             self._write_log(traceback.format_exc())
-            return 1
+            self.returncode = 1
+
         finally:
             # Internal teardown
             self._close()
@@ -604,7 +621,7 @@ class RuncExecutor(object):
             self._close_stdio()
             self._debug_log('Internal teardown complete')
 
-        return self._get_returncode()
+        return self.returncode
 
     # Container lifecycle methods
 
@@ -635,35 +652,38 @@ class RuncExecutor(object):
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             )
             try:
-                # Wait about 10ms, see if it failed right away
-                returncode = proc.wait(0.010)
+                # Wait about ~50ms, see if it failed right away
+                returncode = proc.wait(0.050)
             except subprocess.TimeoutExpired:
                 # Good to go
                 pass
             else:
                 errmsg = proc.stderr.read().decode(errors='surrogateescape')
-                raise RuncError(container.name, errmsg)
+                raise RuncError(container.name, errmsg, code=returncode)
 
             # Get new tty through socket
             # TODO: non-blocking
-            sock, _ = tty_socket.accept()
-            fds = array.array('i')
-            msg, ancdata, flags, _ = sock.recvmsg(
-                4096, socket.CMSG_LEN(fds.itemsize)
-            )
-            for cmsg_level, cmsg_type, cmsg_data in ancdata:
-                if (cmsg_level == socket.SOL_SOCKET and
-                        cmsg_type == socket.SCM_RIGHTS):
-                    # Only expecting a single fd
-                    fd_len = len(cmsg_data) - (len(cmsg_data) % fds.itemsize)
-                    fds.fromstring(cmsg_data[:fd_len])
-            sock.close()
-
-            # Now handle start process
-            returncode = proc.wait()
-            if returncode:
-                errmsg = proc.stderr.read().decode(errors='surrogateescape')
-                raise RuncError(container.name, errmsg)
+            try:
+                sock = None
+                sock, _ = tty_socket.accept()
+                fds = array.array('i')
+                msg, ancdata, flags, _ = sock.recvmsg(
+                    4096, socket.CMSG_LEN(fds.itemsize)
+                )
+                for cmsg_level, cmsg_type, cmsg_data in ancdata:
+                    if (cmsg_level == socket.SOL_SOCKET and
+                            cmsg_type == socket.SCM_RIGHTS):
+                        # Only expecting a single fd
+                        fd_len = len(cmsg_data) - (len(cmsg_data) % fds.itemsize)
+                        fds.fromstring(cmsg_data[:fd_len])
+            finally:
+                if sock:
+                    sock.close()
+                # Now handle start process
+                returncode = proc.wait()
+                if returncode:
+                    errmsg = proc.stderr.read().decode(errors='surrogateescape')
+                    raise RuncError(container.name, errmsg, code=returncode)
         finally:
             tty_socket.close()
             tty_socket_path.unlink()
@@ -719,7 +739,7 @@ class RuncExecutor(object):
                     errmsg = msg.decode(errors='surrogateescape')
                 except:
                     errmsg = f"Command 'runc create' returned {proc.returncode}"
-                raise RuncError(container.name, errmsg)
+                raise RuncError(container.name, errmsg, code=proc.returncode)
         except Exception as e:
             for fileobj in [stdin_p, stdout_p, stderr_p]:
                 fileobj.close()
@@ -767,6 +787,56 @@ class RuncExecutor(object):
 
         return container
 
+    def _check_container_pidfile(self, container):
+        # Check if container pidfile exists, remove if stopped
+        try:
+            pid = container.pidfile_path.read_text()
+            if pid:
+                pid = int(pid)
+            # Check if container process running
+            if pid and pid != container.pid:
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    # PID not running, carry on
+                    container.pidfile_path.unlink()
+                else:
+                    # Technically this doesn't guarantee the pid
+                    # in question is this container, but /shrug
+                    # TODO: check state
+                    errmsg = f"Container already exists"
+                    raise RuncError(container.name, errmsg)
+        except FileNotFoundError:
+            # Good to go
+            pass
+
+    def _check_container_lockfile(self, container):
+        # Check if container lockfile exists, remove if stopped
+        try:
+            pid = container.lockfile_path.read_text()
+            if pid:
+                pid = int(pid)
+            # Check if darkwing process running
+            if pid and pid != self.pid:
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    # PID not running, carry on
+                    container.lockfile_path.unlink()
+                else:
+                    # Technically this doesn't guarantee the pid
+                    # in question is this container, but /shrug
+                    # TODO: check state
+                    errmsg = f"Container already in use"
+                    raise RuncError(container.name, errmsg)
+        except FileNotFoundError:
+            # Good to go
+            pass
+
+    def _write_container_lockfile(self, container):
+        # TODO: use open() with an opener to set mode
+        container.lockfile_path.write_text(str(self.pid))
+
     def _get_container_state(self, container, update=False,
                              raise_on_failure=True):
         runc_cmd = self._base_runc_cmd('state') + [container.name]
@@ -776,7 +846,7 @@ class RuncExecutor(object):
             if raise_on_failure:
                 # TODO: figure out how to kill container w/o pid
                 errmsg = proc_out or f'Error getting container state'
-                raise RuncError(container.name, errmsg)
+                raise RuncError(container.name, errmsg, code=proc.returncode)
             return None
 
         # Parse state
@@ -793,28 +863,21 @@ class RuncExecutor(object):
         with self._condition:
             if self._closing:
                 raise RuntimeError('Cannot create container when closing')
+            if container.pid:
+                raise RuntimeError(
+                    f'Container {container.name} already '
+                    f'created (pid {container.pid})'
+                )
+            # TODO: internally lock container
 
         if not container.rundir:
             container.make_rundir()
 
-        # Check if container exists, remove if stopped
-        pid_path = container.rundir_path / 'pid'
-        try:
-            pid = pid_path.read_text()
-            # Check if process running
-            try:
-                os.kill(int(pid), 0)
-                # Technically this doesn't guarantee the pid
-                # in question is this container, but /shrug
-                # TODO: check state
-                errmsg = f"Container already exists"
-                raise RuncError(container.name, errmsg) from None
-            except ProcessLookupError:
-                # PID not running, carry on
-                pid_path.unlink()
-        except FileNotFoundError:
-            # Good to go
-            pass
+        # Ensure not clobbering another process
+        self._check_container_pidfile(container)
+        self._check_container_lockfile(container)
+        # Lock unpacked container now
+        self._write_container_lockfile(container)
 
         # Update OCI spec file
         spec.update_spec_file(
@@ -828,7 +891,7 @@ class RuncExecutor(object):
         # TODO: other options? Specify '--rootless'?
         runc_cmd.extend([
             '--bundle', str(container.path),
-            '--pid-file', str(pid_path),
+            '--pid-file', str(container.pidfile_path),
         ])
 
         # TODO: only setup tty if stdin and stdout are (the same?) tty
@@ -839,22 +902,28 @@ class RuncExecutor(object):
 
         # Now get state
         state = self._get_container_state(container, update=True)
+        # TODO: check pid too?
         if state['status'] != 'created':
             raise RuncError(
                 container.name, f"Unexpected status {state['status']}"
             )
 
+        with self._condition:
+            # TODO: ensure exclusive
+            # TODO: by name as well?
+            self._containers[container.pid] = container
+
         # Start up i/o thread(s)
         self._setup_container_stdio(container)
-
-        if container.pid:
-            self._containers[container.pid] = container
 
         return container
 
     def start_container(self, container):
         if not container.pid or container.status != 'created':
-            raise RuntimeError(f"Cannot start {container.status} container")
+            raise RuntimeError(
+                f'Cannot start {container.status} '
+                f'container "{container.name}"'
+            )
         
         runc_cmd = self._base_runc_cmd('start') + [container.name]
         proc = simple_command(runc_cmd, write_output=False)
@@ -862,7 +931,7 @@ class RuncExecutor(object):
         if proc.returncode:
             # TODO: Kill container?
             errmsg = proc_out or f'Error starting container'
-            raise RuncError(container.name, errmsg)
+            raise RuncError(container.name, errmsg, code=proc.returncode)
 
         # Now get state
         state = self._get_container_state(container, update=True)
@@ -890,13 +959,20 @@ class RuncExecutor(object):
         proc_out = proc.stdout.encode(errors='surrogateescape')
         if proc.returncode:
             errmsg = proc_out or f'Error removing container'
-            raise RuncError(container.name, errmsg)
+            raise RuncError(container.name, errmsg, code=proc.returncode)
 
-        # Remove pidfile
-        try:
-            (container.rundir_path / 'pid').unlink()
-        except FileNotFoundError:
-            pass
+        # Remove pidfile, lockfile
+        with self._condition:
+            try:
+                container.pidfile_path.unlink()
+            except FileNotFoundError:
+                pass
+            try:
+                container.lockfile_path.unlink()
+            except FileNotFoundError:
+                pass
+            if container.pid in self._containers:
+                del self._containers[container.pid]
 
         container.status = 'removed'
         return container
