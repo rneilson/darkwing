@@ -223,7 +223,7 @@ class RuncExecutor(object):
     )
     RAISE_ON_SIGNALS = (
         signal.SIGABRT,
-        signal.SIGALRM,
+        # signal.SIGALRM,
     )
 
     def __init__(self, context_name='default', state_dir=None,
@@ -638,11 +638,12 @@ class RuncExecutor(object):
         ]
 
         # Init socket
-        tty_socket = socket.socket(socket.AF_UNIX)
         try:
             tty_socket_path.unlink()
         except FileNotFoundError:
             pass
+        tty_socket = socket.socket(socket.AF_UNIX)
+        tty_socket.settimeout(0.2)
         tty_socket.bind(str(tty_socket_path))
         tty_socket.listen()
 
@@ -653,22 +654,11 @@ class RuncExecutor(object):
                 runc_cmd, cwd=container.path, stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             )
-            # try:
-            #     # Wait about ~50ms, see if it failed right away
-            #     returncode = proc.wait(0.050)
-            # except subprocess.TimeoutExpired:
-            #     # Good to go
-            #     pass
-            # else:
-            #     errmsg = proc.stderr.read().decode(errors='surrogateescape')
-            #     raise RuncError(container.name, errmsg, code=returncode)
 
             try:
-                # Set alarm for timeout
-                signal.alarm(1)
                 # Get new tty through socket
-                # TODO: non-blocking?
                 sock, _ = tty_socket.accept()
+                sock.settimeout(0.2)
                 fds = array.array('i')
                 msg, ancdata, flags, _ = sock.recvmsg(
                     4096, socket.CMSG_LEN(fds.itemsize)
@@ -680,7 +670,6 @@ class RuncExecutor(object):
                         fd_len = len(cmsg_data) - (len(cmsg_data) % fds.itemsize)
                         fds.fromstring(cmsg_data[:fd_len])
             finally:
-                signal.alarm(0)
                 if sock:
                     sock.close()
                 # Now handle start process
