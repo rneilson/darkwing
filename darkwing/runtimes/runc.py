@@ -725,6 +725,8 @@ class RuncExecutor(object):
                                 else:
                                     break
                         except BlockingIOError:
+                            if msg:
+                                break
                             continue
                         else:
                             break
