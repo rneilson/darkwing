@@ -605,13 +605,12 @@ class RuncExecutor(object):
                 self.remove_container(container)
                 self._debug_log('Container removed')
 
-        # except RuncError as e:
-        #     self._write_log(f"{e}")
-        #     self.returncode = e.code
-
         except Exception as e:
             self._write_log(traceback.format_exc())
-            self.returncode = 1
+            if isinstance(e, RuncError):
+                self.returncode = e.code
+            else:
+                self.returncode = 1
 
         finally:
             # Internal teardown
