@@ -226,7 +226,7 @@ class RuncExecutor(object):
         # signal.SIGALRM,
     )
 
-    def __init__(self, context_name='default', state_dir=None,
+    def __init__(self, context_name='', state_dir=None,
                  stdin=None, stdout=None, stderr=None, close_stdio=False,
                  uid=None, gid=None, debug=False, log_file=sys.stderr):
         # Stdio

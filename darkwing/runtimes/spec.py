@@ -157,8 +157,8 @@ def update_spec_file(config, rundir, ouid=None, ogid=None,
                      allow_tty=None, force_tty=None, ensure_mounts=True):
     assert allow_tty is None or force_tty is None
     # Get config file
-    spec_path = Path(config.data['storage']['base']) / 'config.json'
-    orig_path = Path(config.data['storage']['base']) / 'config.orig.json'
+    spec_path = Path(config.data['storage']['container']) / 'config.json'
+    orig_path = Path(config.data['storage']['container']) / 'config.orig.json'
     try:
         # If original/backup present, prefer as clean version
         spec_str = orig_path.read_text()

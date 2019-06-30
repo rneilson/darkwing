@@ -12,7 +12,7 @@ if __name__ == '__main__':
         sys.exit('No container specified')
 
     name, sep, context_name = args[0].partition(':')
-    ctx = context.get_context_config(context_name if sep else 'default')
+    ctx = context.get_context_config(context_name if sep else '')
     con = container.load_container(name, ctx, make_rundir=True)
 
     # runc = RuncExecutor(debug=True)
