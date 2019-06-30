@@ -231,9 +231,14 @@ def get_container_config(name, context, dirs=None, rootless=None, uid=None):
         rootless = not probably_root()
 
     if isinstance(context, (str, bytes)):
-        context = get_context_config(
+        ctx = get_context_config(
             context, dirs=dirs, rootless=rootless, uid=uid
         )
+        if not ctx:
+            raise FileNotFoundError(f'Context "{context}" not found')
+        context = ctx
+    elif not context:
+        raise ValueError(f'No context given for container "{name}"')
 
     config_base = Path(context.get_path('configs', 'containers'))
     config_path = (config_base / name).with_suffix('.toml')
