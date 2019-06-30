@@ -30,7 +30,7 @@ def unpack_image(config, rootless=None, write_output=True,
     config_cmd.append(image_opt)
 
     storage = config.data['storage']
-    storage_path = Path(storage['base'])
+    storage_path = Path(storage['container'])
     rootfs_path = storage_path / 'rootfs'
     config_path = storage_path / 'config.json'
     config_orig = storage_path / 'config.orig.json'

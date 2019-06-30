@@ -11,6 +11,7 @@ from darkwing.utils import (
 from darkwing.runtimes import spec
 from darkwing import storage
 from .defaults import default_base_paths, default_container
+from .context import get_context_config
 
 
 class Config(object):
@@ -18,7 +19,8 @@ class Config(object):
     def __init__(self, name, path, data):
         self.name = name
         self.path = path
-        # TODO: expand
+        # TODO: get base path from path
+        # TODO: best way to specify base for relative paths?
         self.data = data
 
     def __repr__(self):
@@ -50,7 +52,8 @@ class Container(object):
     def __init__(self, name, config, rundir=None, context=None):
         # Manager state
         self.name = name
-        self.path = Path(config.data['storage']['base'])
+        # TODO: should pre-expand any paths, using context if relative
+        self.path = Path(config.data['storage']['container'])
         self.config = config
         self.rundir = rundir
         self.context = context
@@ -150,7 +153,8 @@ class Container(object):
         # Update storage path if required (future feature)
         if self.path != storage_path:
             self.path = storage_path
-            self.config.data['storage']['base'] = storage_path
+            # TODO: update proper attr
+            self.config.data['storage']['container'] = str(storage_path)
 
         # # Update spec file
         # spec.update_spec_file(self.config, self.rundir)
@@ -227,19 +231,14 @@ def get_container_config(name, context, dirs=None, rootless=None, uid=None):
         rootless = not probably_root()
 
     if isinstance(context, (str, bytes)):
-        context_name = context
-    else:
-        context_name = context.name
+        context = get_context_config(
+            context, dirs=dirs, rootless=rootless, uid=uid
+        )
 
-    if dirs is None:
-        cwd_base = Path.cwd() / '.darkwing'
-        config_base, _ = default_base_paths(rootless, uid)
-        dirs = [cwd_base, config_base]
-
-    for dirp in dirs:
-        config_path = (Path(dirp) / context_name / name).with_suffix('.toml')
-        if config_path.exists():
-            return Config(name, config_path, toml.load(config_path))
+    config_base = Path(context.get_path('configs', 'containers'))
+    config_path = (config_base / name).with_suffix('.toml')
+    if config_path.exists():
+        return Config(name, config_path, toml.load(config_path))
 
     return None
 
@@ -250,7 +249,7 @@ def make_container_config(name, context, image=None, tag='latest', uid=0,
     if egid is None:
         egid = os.getegid()
     
-    config_base = Path(context.data['configs']['base'])
+    config_base = Path(context.get_path('configs', 'containers'))
     config_path = (config_base / name).with_suffix('.toml')
 
     owner = context.data['owner']
@@ -265,9 +264,10 @@ def make_container_config(name, context, image=None, tag='latest', uid=0,
 
     if write_file:
         # Ensure all required config, storage dirs created
+        # TODO: resolve relative paths from config
         dirs = [
             (config_base, 0o775),
-            (Path(config_data['storage']['base']), 0o770),
+            (Path(config_data['storage']['container']), 0o770),
             (Path(config_data['storage']['secrets']), 0o700),
             (Path(config_data['volumes']['private']), 0o770),
         ]
@@ -275,7 +275,7 @@ def make_container_config(name, context, image=None, tag='latest', uid=0,
 
         # Write config to file
         # Touch mostly to raise FileExistsError
-        config_path.touch(mode=0o664, exist_ok=False)
+        config_path.touch(mode=0o660, exist_ok=False)
         if do_chown:
             os.chown(config_path, uid=cuid, gid=cgid)
         config_path.write_text(toml.dumps(config_data))
@@ -289,6 +289,7 @@ def make_runtime_dir(name, config, context, base_path=None,
     else:
         rundir_base = Path(base_path)
 
+    # TODO: get rundir_path from context object instead
     if isinstance(context, (str, bytes)):
         context_name = context
     else:

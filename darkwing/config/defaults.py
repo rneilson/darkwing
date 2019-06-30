@@ -25,7 +25,7 @@ def default_base_paths(rootless=None, uid=None):
 
     return configs, storage
 
-def default_context(name='default', rootless=None, ouid=None, ogid=None,
+def default_context(name='', rootless=None, ouid=None, ogid=None,
                     configs_dir=None, storage_dir=None, base_domain=None):
     if rootless is None:
         rootless = not probably_root()
@@ -35,6 +35,8 @@ def default_context(name='default', rootless=None, ouid=None, ogid=None,
     if ogid is None:
         ogid = os.getegid()
 
+    # TODO: anything to specify for relative paths?
+    # TODO: how to convey relative to destination file's directory?
     if not configs_dir or not storage_dir:
         configs_base, storage_base = default_base_paths(rootless, ouid)
     if configs_dir:
@@ -48,12 +50,16 @@ def default_context(name='default', rootless=None, ouid=None, ogid=None,
     return {
         'configs': {
             'base': str(configs_base / name),
-            'secrets': str(configs_base / name / '.secrets'),
+            # TODO: allow paths relative to base
+            'containers': str(configs_base / name / 'containers'),
+            'secrets': str(configs_base / name / 'secrets'),
         },
         'storage': {
+            'base': str(storage_base),
+            # TODO: allow paths relative to base
             'images': str(storage_base / 'images'),
-            'volumes': str(storage_base / 'volumes' / name),
             'containers': str(storage_base / 'containers' / name),
+            'volumes': str(storage_base / 'volumes' / name),
         },
         'dns': {
             'domain': '.'.join(filter(None, [name, base_domain])),
@@ -72,9 +78,11 @@ def default_container(name, context, image=None, tag='latest', uid=0, gid=0):
     if image is None:
         image = name
 
-    image_path = Path(context.data['storage']['images']) / 'oci' / image
-    storage_path = Path(context.data['storage']['containers']) / name
-    secrets_path = Path(context.data['configs']['secrets']) / name
+    # TODO: any of these to allow relative paths for?
+    # TODO: if so, how to specify relative base in input?
+    image_path = Path(context.get_path('storage', 'images')) / 'oci' / image
+    storage_path = Path(context.get_path('storage', 'containers')) / name
+    secrets_path = Path(context.get_path('configs', 'secrets')) / name
 
     return {
         'image': {
@@ -83,7 +91,7 @@ def default_container(name, context, image=None, tag='latest', uid=0, gid=0):
             'tag': tag,
         },
         'storage': {
-            'base': str(storage_path),
+            'container': str(storage_path),
             'secrets': str(secrets_path),
         },
         'exec': {
@@ -121,7 +129,8 @@ def default_container(name, context, image=None, tag='latest', uid=0, gid=0):
             ],
         },
         'volumes': {
-            'shared': context.data['storage']['volumes'],
+            # TODO: remove 'shared', or assume relative to context?
+            'shared': context.get_path('storage', 'volumes'),
             'private': str(storage_path / 'volumes'),
             'mounts': [],
         },
